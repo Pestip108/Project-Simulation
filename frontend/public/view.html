@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Secret</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f2f5;
+        }
+
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        #message {
+            margin-top: 1rem;
+            padding: 1rem;
+            border: 1px solid #eee;
+            background-color: #fafafa;
+            border-radius: 4px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            text-align: left;
+        }
+
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Secret Message</h1>
+        <div id="content">Loading...</div>
+    </div>
+
+    <script>
+        async function loadSecret() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const id = urlParams.get('id');
+
+            if (!id) {
+                document.getElementById('content').innerHTML = '<p class="error">No secret ID provided in URL.</p>';
+                return;
+            }
+
+            try {
+                const response = await fetch(`http://localhost:3000/api/view/${id}`);
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to load secret');
+                }
+
+                document.getElementById('content').innerHTML = `
+                    <div id="message">${data.text}</div>
+                    <p><small>This message has been deleted from the server.</small></p>
+                `;
+            } catch (err) {
+                document.getElementById('content').innerHTML = `<p class="error">${err.message}</p>`;
+            }
+        }
+
+        loadSecret();
+    </script>
+</body>
+
+</html>
