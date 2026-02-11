@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,15 +14,20 @@
             height: 100vh;
             background-color: #f0f2f5;
         }
+
         .container {
             background: white;
             padding: 2rem;
             border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             width: 100%;
             max-width: 400px;
         }
-        h1 { margin-top: 0; }
+
+        h1 {
+            margin-top: 0;
+        }
+
         textarea {
             width: 100%;
             height: 100px;
@@ -30,6 +36,7 @@
             border-radius: 4px;
             border: 1px solid #ccc;
         }
+
         button {
             width: 100%;
             padding: 0.75rem;
@@ -40,14 +47,32 @@
             cursor: pointer;
             font-size: 1rem;
         }
-        button:hover { background-color: #0056b3; }
-        #result { margin-top: 1rem; word-break: break-all; }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        #result {
+            margin-top: 1rem;
+            word-break: break-all;
+        }
     </style>
 </head>
+
 <body>
     <div class="container">
         <h1>Share a Secret</h1>
         <textarea id="secretText" placeholder="Enter your secret message here..."></textarea>
+
+        <label for="expiration">Expires in:</label>
+        <select id="expiration"
+            style="width: 100%; padding: 0.5rem; margin-bottom: 1rem; border-radius: 4px; border: 1px solid #ccc;">
+            <option value="1">1 Minute</option>
+            <option value="60">1 Hour</option>
+            <option value="1440" selected>24 Hours</option>
+            <option value="10080">7 Days</option>
+        </select>
+
         <button onclick="shareSecret()">Generate Link</button>
         <div id="result"></div>
     </div>
@@ -55,13 +80,15 @@
     <script>
         async function shareSecret() {
             const text = document.getElementById('secretText').value;
+            const expiresInMinutes = parseInt(document.getElementById('expiration').value);
+
             if (!text) return alert('Please enter some text');
 
             try {
                 const response = await fetch('http://localhost:3000/api/share', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text })
+                    body: JSON.stringify({ text, expiresInMinutes })
                 });
 
                 if (!response.ok) throw new Error('Failed to share secret');
@@ -80,4 +107,5 @@
         }
     </script>
 </body>
+
 </html>
