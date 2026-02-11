@@ -1,30 +1,35 @@
 package encryption
 
 import (
-	"encoding/base64"
+	"bytes"
 	"testing"
 )
 
 func TestEncryptDecrypt(t *testing.T) {
-	key := []byte("thisisaveverysecretkeyforaesgcm!") // 32 bytes
+	// Use a valid 32-byte key for AES-256
+	key := []byte("12345678901234567890123456789012")
 	plaintext := "Hello, World!"
 
 	// Test Encryption
-	ciphertext, err := Encrypt(plaintext, key)
+	encryptedData, err := Encrypt(plaintext, key)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
 
-	if ciphertext == "" {
+	if len(encryptedData.Ciphertext) == 0 {
 		t.Fatal("Ciphertext is empty")
 	}
 
-	if ciphertext == plaintext {
+	if len(encryptedData.Nonce) == 0 {
+		t.Fatal("Nonce is empty")
+	}
+
+	if string(encryptedData.Ciphertext) == plaintext {
 		t.Fatal("Ciphertext should not match plaintext")
 	}
 
 	// Test Decryption
-	decrypted, err := Decrypt(ciphertext, key)
+	decrypted, err := Decrypt(encryptedData, key)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -35,7 +40,7 @@ func TestEncryptDecrypt(t *testing.T) {
 }
 
 func TestEncryptUniqueness(t *testing.T) {
-	key := []byte("thisisaveverysecretkeyforaesgcm!")
+	key := []byte("12345678901234567890123456789012")
 	plaintext := "Hello, World!"
 
 	c1, err := Encrypt(plaintext, key)
@@ -48,8 +53,14 @@ func TestEncryptUniqueness(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if c1 == c2 {
-		t.Error("Encryption should produce different outputs for same input (nonce usage)")
+	// Compare nonces - they should be different
+	if bytes.Equal(c1.Nonce, c2.Nonce) {
+		t.Error("Encryption should produce different nonces for same input")
+	}
+
+	// Ciphertexts should also be different due to different nonces
+	if bytes.Equal(c1.Ciphertext, c2.Ciphertext) {
+		t.Error("Encryption should produce different ciphertexts for same input (nonce usage)")
 	}
 }
 
@@ -62,18 +73,25 @@ func TestInvalidKey(t *testing.T) {
 }
 
 func TestDecryptInvalidData(t *testing.T) {
-	key := []byte("thisisaveverysecretkeyforaesgcm!")
-	
-	// Test garbage data
-	_, err := Decrypt("garbage", key)
+	key := []byte("12345678901234567890123456789012")
+
+	// Test with corrupted ciphertext (valid nonce size but invalid ciphertext)
+	invalidData := &EncryptedData{
+		Nonce:      make([]byte, 12), // Valid nonce size for GCM
+		Ciphertext: []byte("corrupted data that won't decrypt"),
+	}
+	_, err := Decrypt(invalidData, key)
 	if err == nil {
-		t.Error("Expected error decrypting garbage data")
+		t.Error("Expected error decrypting corrupted ciphertext")
 	}
 
-	// Test valid base64 but invalid ciphertext structure
-	encoded := base64.StdEncoding.EncodeToString([]byte("short"))
-	_, err = Decrypt(encoded, key)
+	// Test with empty ciphertext
+	emptyData := &EncryptedData{
+		Nonce:      make([]byte, 12), // Valid nonce size for GCM
+		Ciphertext: []byte{},
+	}
+	_, err = Decrypt(emptyData, key)
 	if err == nil {
-		t.Error("Expected error decrypting short data")
+		t.Error("Expected error decrypting empty ciphertext")
 	}
 }

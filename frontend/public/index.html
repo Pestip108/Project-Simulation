@@ -62,7 +62,7 @@
 <body>
     <div class="container">
         <h1>Share a Secret</h1>
-        <textarea id="secretText" placeholder="Enter your secret message here..."></textarea>
+        <textarea id="secretText" placeholder="Enter your secret message here..." required></textarea>
 
         <label for="expiration">Expires in:</label>
         <select id="expiration"
@@ -73,6 +73,8 @@
             <option value="10080">7 Days</option>
         </select>
 
+        <input type="password" name="password" id="password" placeholder="Password" required autocomplete="off" />
+
         <button onclick="shareSecret()">Generate Link</button>
         <div id="result"></div>
     </div>
@@ -81,19 +83,21 @@
         async function shareSecret() {
             const text = document.getElementById('secretText').value;
             const expiresInMinutes = parseInt(document.getElementById('expiration').value);
+            const password = document.getElementById("password").value;
 
             if (!text) return alert('Please enter some text');
 
             try {
-                const response = await fetch('http://localhost:3000/api/share', {
+                const response = await fetch('http://localhost:4000/api/share', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text, expiresInMinutes })
+                    body: JSON.stringify({ text, expiresInMinutes, password })
                 });
 
-                if (!response.ok) throw new Error('Failed to share secret');
-
                 const data = await response.json();
+
+                if (!response.ok) throw new Error('Failed to share secret: ' + data.error);
+                
                 const link = data.link;
 
                 const resultDiv = document.getElementById('result');

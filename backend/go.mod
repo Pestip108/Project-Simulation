@@ -6,6 +6,7 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/gofiber/fiber/v2 v2.52.11
 	github.com/google/uuid v1.6.0
+	golang.org/x/crypto v0.46.0
 	gorm.io/gorm v1.31.1
 )
 
