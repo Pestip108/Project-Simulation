@@ -62,7 +62,7 @@
 <body>
     <div class="container">
         <h1>Share a Secret</h1>
-        <textarea id="secretText" placeholder="Enter your secret message here..." required></textarea>
+        <textarea id="secretText" placeholder="Enter your secret message here..." required maxlength="10000"></textarea>
 
         <label for="expiration">Expires in:</label>
         <select id="expiration"
@@ -73,7 +73,8 @@
             <option value="10080">7 Days</option>
         </select>
 
-        <input type="password" name="password" id="password" placeholder="Password" required autocomplete="off" />
+        <input type="password" name="password" id="password" placeholder="Password (min 6 chars)" required
+            autocomplete="off" minlength="6" maxlength="72" />
 
         <button onclick="shareSecret()">Generate Link</button>
         <div id="result"></div>
@@ -88,6 +89,9 @@
             const password = document.getElementById("password").value;
 
             if (!text) return alert('Please enter some text');
+            if (text.length > 10000) return alert('Secret text is too long (max 10,000 characters)');
+            if (!password || password.length < 6) return alert('Password must be at least 6 characters long');
+            if (password.length > 72) return alert('Password is too long (max 72 characters)');
 
             try {
                 const response = await fetch(`${window.APP_CONFIG.API_URL}/api/share`, {
@@ -99,7 +103,7 @@
                 const data = await response.json();
 
                 if (!response.ok) throw new Error('Failed to share secret: ' + data.error);
-                
+
                 const link = data.link;
 
                 const resultDiv = document.getElementById('result');

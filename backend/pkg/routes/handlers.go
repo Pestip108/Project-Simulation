@@ -7,8 +7,16 @@ import (
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+)
+
+const (
+	MaxTextLength         = 10000 // 10KB limit
+	MaxExpirationMinutes = 10080 // 7 days limit
+	MinPasswordLength    = 6
+	MaxPasswordLength    = 72 // Standard bcrypt limit
 )
 
 // createSecretHandler handles the creation of new secrets
@@ -32,6 +40,12 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
+		if len(input.Text) > MaxTextLength {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Text is too long (max 10KB)",
+			})
+		}
+
 		// Encrypt the text before saving
 		encryptedData, err := encryption.Encrypt(input.Text, encryptionKey)
 		if err != nil {
@@ -47,10 +61,28 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
+		if input.ExpiresInMinutes > MaxExpirationMinutes {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Expiration time cannot exceed 7 days",
+			})
+		}
+
 		// Validate password
 		if input.Password == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Password is required",
+			})
+		}
+
+		if len(input.Password) < MinPasswordLength {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Password must be at least 6 characters long",
+			})
+		}
+
+		if len(input.Password) > MaxPasswordLength {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Password is too long (max 72 characters)",
 			})
 		}
 
@@ -91,6 +123,13 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
+
+		// Validate UUID format
+		if _, err := uuid.Parse(id); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Invalid secret ID format",
+			})
+		}
 		var input struct {
 			Password string `json:"password"`
 		}

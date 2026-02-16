@@ -4,11 +4,15 @@ A secure, "view-once" message sharing application. Users can share encrypted tex
 
 ## 🚀 Features
 
-- **End-to-End Encryption**: Messages are encrypted using AES-256-GCM before being stored in the database.
-- **View-Once Logic**: Secrets are permanently deleted from the database immediately after the first successful retrieval.
-- **Self-Destruction**: Expired secrets are automatically cleaned up by a background worker.
-- **Password Protection**: Access to secrets is restricted by a user-defined password (hashed using bcrypt).
-- **Rate Limiting**: Built-in protection against brute-force and spam requests.
+- **End-to-End Encryption**: Messages are encrypted using AES-256-GCM before storage.
+- **View-Once Logic**: Secrets are permanently deleted immediately after the first successful retrieval.
+- **Self-Destruction**: Expired secrets are automatically cleaned up by a background worker (in server mode).
+- **Security Hardening**:
+    - Max text length: 10KB.
+    - Password requirements: 6-72 characters (hashed with bcrypt).
+    - Expiration limit: Max 7 days.
+    - ID Validation: Strict UUID format checking.
+- **Rate Limiting**: Protection against brute-force and spam requests.
 
 ## 🛠 Tech Stack
 
@@ -20,58 +24,57 @@ A secure, "view-once" message sharing application. Users can share encrypted tex
 ## 📋 Prerequisites
 
 - Go 1.25.4 or higher installed.
+- `http-server` (or similar) for the frontend.
+
+## ⚙️ Configuration
+
+### Backend (.env)
+Create a `.env` file in the `backend/` directory:
+```env
+PORT=4000
+FRONTEND_URL=http://localhost:3000
+CORS_ALLOWED_ORIGINS=http://localhost:3000
+ENCRYPTION_KEY=your-32-byte-secret-key-goes-here
+```
+
+### Frontend (config.js)
+Ensure `frontend/config.js` is configured with your backend URL:
+```javascript
+window.APP_CONFIG = {
+    API_URL: "http://localhost:4000"
+};
+```
 
 ## ⚙️ Setup & Installation
 
-### 1. Clone the repository
-```bash
-git clone https://github.com/Pestip108/Project-Simulation.git
-cd Project-Simulation
-```
-
-### 2. Configure Environment Variables
-The server requires a 32-byte encryption key for AES-256.
-```powershell
-# Windows (PowerShell)
-$env:ENCRYPTION_KEY = "your-32-character-secret-key-!!"
-```
-
-### 3. Run the Backend Server
+### 1. Run the Backend Server
 ```bash
 cd backend
 go run cmd/server/main.go
 ```
-The server will start on `http://localhost:4000`.
 
-### 4. Run the Frontend
-The frontend is a static web application. You can use any static file server, such as `http-server`.
-
+### 2. Run the Frontend
 ```bash
 cd frontend
 http-server ./ -p 3000 -c-1 --cors
 ```
 
-Once running, navigate to:
-- **Share a secret**: `http://localhost:3000/index.html`
-- **View a secret**: Accessed via the generated unique link (e.g., `http://localhost:3000/view.html?id=...`).
-
-> [!TIP]
-> The backend generates links pointing to `localhost:3000` by default. If you change the frontend port, ensure you update the link generation logic in `backend/pkg/routes/routes.go`.
+Once running, navigate to `http://localhost:3000/index.html`.
 
 ## 🔌 API Endpoints
 
 ### `POST /api/share`
 Creates a new encrypted secret.
 - **Body**: `{ "text": "string", "expiresInMinutes": int, "password": "string" }`
-- **Returns**: `{ "id": "uuid", "link": "url" }`
+- **Constraints**: Text < 10KB, Password 6-72 chars, Expiration < 7 days.
 
 ### `POST /api/view/:id`
 Retrieves and deletes a secret.
 - **Body**: `{ "password": "string" }`
-- **Returns**: `{ "text": "decrypted-string" }`
+- **Validation**: `:id` must be a valid UUID.
 
 ## 🔒 Security Summary
-This project prioritizes data privacy:
-- **Zero-knowledge**: The server never stores plain-text messages or passwords.
-- **Integrity**: Nonces are unique for every encryption operation.
-- **Volatility**: Once viewed, the data is gone forever.
+This project prioritized data privacy and integrity:
+- **Zero-knowledge**: Plain-text messages and passwords never touch the disk.
+- **Integrity**: Each encryption uses a unique nonce.
+- **Volatility**: Data is purged immediately upon viewing or expiration.
