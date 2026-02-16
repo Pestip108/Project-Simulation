@@ -60,22 +60,6 @@ func main() {
 	// Initialize Fiber app
 	app := fiber.New()
 
-	// Background worker to clean up expired secrets
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			err := db.
-				Where("expires_at <= ?", time.Now().UTC()).
-				Delete(&routes.Secret{}).Error
-
-			if err != nil {
-				log.Printf("Cleanup error: %v", err)
-			}
-		}
-	}()
-
 	// Configure CORS
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: allowedOrigins, // For development mostly
