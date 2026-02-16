@@ -75,7 +75,3 @@ This project prioritizes data privacy:
 - **Zero-knowledge**: The server never stores plain-text messages or passwords.
 - **Integrity**: Nonces are unique for every encryption operation.
 - **Volatility**: Once viewed, the data is gone forever.
-Run Server:
-```
-go run ./cmd/server
-```
