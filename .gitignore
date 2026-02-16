@@ -1,0 +1,15 @@
+# Environment files
+.env
+
+# Go
+bin/
+vendor/
+
+# DB
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/

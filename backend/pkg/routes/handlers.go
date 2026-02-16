@@ -2,6 +2,7 @@ package routes
 
 import (
 	"log"
+	"os"
 	"time"
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
@@ -74,9 +75,14 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
+		frontendURL := os.Getenv("FRONTEND_URL")
+		if frontendURL == "" {
+			log.Fatal("FRONTEND_URL not set")
+		}
+
 		return c.JSON(fiber.Map{
 			"id":   secret.ID,
-			"link": "http://localhost:3000/view.html?id=" + secret.ID,
+			"link": frontendURL + "/view.html?id=" + secret.ID,
 		})
 	}
 }
@@ -129,11 +135,6 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
-		// Delete after viewing (view-once behavior)
-		if result := db.Unscoped().Delete(&secret); result.Error != nil {
-			log.Printf("Failed to delete secret %s: %v", id, result.Error)
-		}
-
 		// Reconstruct EncryptedData from stored fields
 		encryptedData := &encryption.EncryptedData{
 			Ciphertext: []byte(secret.Text),
@@ -145,6 +146,11 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to decrypt secret",
 			})
+		}
+
+		// Delete after viewing (view-once behavior)
+		if result := db.Unscoped().Delete(&secret); result.Error != nil {
+			log.Printf("Failed to delete secret %s: %v", id, result.Error)
 		}
 
 		return c.JSON(fiber.Map{

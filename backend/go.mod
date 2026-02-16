@@ -3,17 +3,18 @@ module github.com/Pestip108/Project-Simulation/backend
 go 1.25.4
 
 require (
+	github.com/aws/aws-lambda-go v1.52.0
+	github.com/awslabs/aws-lambda-go-api-proxy v0.16.2
 	github.com/glebarez/sqlite v1.11.0
 	github.com/gofiber/fiber/v2 v2.52.11
 	github.com/google/uuid v1.6.0
+	github.com/joho/godotenv v1.5.1
 	golang.org/x/crypto v0.46.0
 	gorm.io/gorm v1.31.1
 )
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
-	github.com/aws/aws-lambda-go v1.52.0 // indirect
-	github.com/awslabs/aws-lambda-go-api-proxy v0.16.2 // indirect
 	github.com/clipperhouse/uax29/v2 v2.6.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
