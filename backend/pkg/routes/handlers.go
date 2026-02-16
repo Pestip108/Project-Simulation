@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	MaxTextLength         = 10000 // 10KB limit
+	MaxTextLength        = 10000 // 10KB limit
 	MaxExpirationMinutes = 10080 // 7 days limit
 	MinPasswordLength    = 6
 	MaxPasswordLength    = 72 // Standard bcrypt limit
@@ -107,6 +107,8 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
+		ScheduleSecretCleanup(db, secret.ID, secret.ExpiresAt)
+
 		frontendURL := os.Getenv("FRONTEND_URL")
 		if frontendURL == "" {
 			log.Fatal("FRONTEND_URL not set")
@@ -196,4 +198,30 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			"text": decryptedText,
 		})
 	}
+}
+
+func ScheduleSecretCleanup(db *gorm.DB, secretID string, expiresAt time.Time) {
+	secretUUID, err := uuid.Parse(secretID)
+	if err != nil {
+		log.Printf("invalid UUID: %v", err)
+		return
+	}
+	// Calculate duration until expiry
+	delay := time.Until(expiresAt)
+	if delay <= 0 {
+		// Already expired, delete immediately
+		db.Delete(&Secret{}, secretUUID)
+		return
+	}
+
+	// Wait until expiry
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		<-timer.C
+		if err := db.Delete(&Secret{}, secretUUID).Error; err != nil {
+			log.Printf("Cleanup error for secret %s: %v", secretID, err)
+		}
+	}()
 }

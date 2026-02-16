@@ -55,7 +55,7 @@ func main() {
 		log.Fatal("Failed to auto migrate:", err)
 	}
 
-	go startCleanupJob(db)
+	startupCleanerScheduler(db)
 
 	// Initialize Fiber app
 	app := fiber.New()
@@ -105,22 +105,11 @@ func main() {
 	log.Fatal(app.Listen(":" + port))
 }
 
-func startCleanupJob(db *gorm.DB) {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
+func startupCleanerScheduler(db *gorm.DB) {
+	var secrets []routes.Secret
+	db.Where("expires_at > ?", time.Now().UTC()).Find(&secrets)
 
-	for {
-		<-ticker.C
-
-		result := db.Unscoped().
-			Where("expires_at IS NOT NULL AND expires_at != ? AND expires_at <= ?",
-				time.Time{}, time.Now().UTC()).
-			Delete(&routes.Secret{})
-
-		if result.Error != nil {
-			log.Printf("Cleanup error: %v", result.Error)
-		} else if result.RowsAffected > 0 {
-			log.Printf("Deleted %d expired secrets", result.RowsAffected)
-		}
+	for _, s := range secrets {
+		routes.ScheduleSecretCleanup(db, s.ID, s.ExpiresAt)
 	}
 }
