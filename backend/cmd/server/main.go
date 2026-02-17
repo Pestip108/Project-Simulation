@@ -7,6 +7,7 @@ import (
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -52,10 +53,11 @@ func main() {
 	}
 
 	// Auto Migrate the schema
-	if err := db.AutoMigrate(&routes.Secret{}); err != nil {
+	if err := db.AutoMigrate(&secret.Secret{}); err != nil {
 		log.Fatal("Failed to auto migrate:", err)
 	}
 
+	// Initialize Scheduler
 	scheduler := heap.NewSecretScheduler(db)
 	if err := scheduler.LoadPendingSecrets(); err != nil {
 		log.Fatal(err)
@@ -85,7 +87,7 @@ func main() {
 	}))
 
 	// Setup routes
-	routes.SetupRoutes(app, db, encryptionKey)
+	routes.SetupRoutes(app, db, encryptionKey, scheduler)
 
 	// Serve static files for frontend
 	app.Static("/", "../../frontend")

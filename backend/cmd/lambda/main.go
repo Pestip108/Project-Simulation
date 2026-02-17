@@ -5,7 +5,9 @@ import (
 	"log"
 	"os"
 
+	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	fiberadapter "github.com/awslabs/aws-lambda-go-api-proxy/fiber"
@@ -44,8 +46,13 @@ func init() {
 	}
 
 	// Auto Migrate the schema
-	if err := db.AutoMigrate(&routes.Secret{}); err != nil {
+	if err := db.AutoMigrate(&secret.Secret{}); err != nil {
 		log.Fatal("Failed to auto migrate:", err)
+	}
+
+	scheduler := heap.NewSecretScheduler(db)
+	if err := scheduler.LoadPendingSecrets(); err != nil {
+		log.Fatal(err)
 	}
 
 	app := fiber.New()
@@ -55,7 +62,7 @@ func init() {
 		AllowHeaders: "Origin, Content-Type, Accept",
 	}))
 
-	routes.SetupRoutes(app, db, encryptionKey)
+	routes.SetupRoutes(app, db, encryptionKey, scheduler)
 
 	adapter = fiberadapter.New(app)
 }
