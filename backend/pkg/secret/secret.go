@@ -1,4 +1,4 @@
-package routes
+package secret
 
 import (
 	"time"

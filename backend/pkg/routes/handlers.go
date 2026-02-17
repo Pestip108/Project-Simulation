@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -20,7 +22,7 @@ const (
 )
 
 // createSecretHandler handles the creation of new secrets
-func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
+func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		var input struct {
 			Text             string `json:"text"`
@@ -94,7 +96,7 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
-		secret := Secret{
+		secret := secret.Secret{
 			Text:         string(encryptedData.Ciphertext),
 			Nonce:        encryptedData.Nonce,
 			CreatedAt:    time.Now().UTC(),
@@ -107,7 +109,12 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
-		ScheduleSecretCleanup(db, secret.ID, secret.ExpiresAt)
+		secretUUID, err := uuid.Parse(secret.ID)
+		if err != nil {
+			log.Printf("invalid UUID: %v", err)
+			return err
+		}
+		scheduler.AddSecret(secretUUID, secret.ExpiresAt)
 
 		frontendURL := os.Getenv("FRONTEND_URL")
 		if frontendURL == "" {
@@ -122,7 +129,7 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 }
 
 // viewSecretHandler handles viewing and deleting secrets
-func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
+func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
 
@@ -135,7 +142,7 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 		var input struct {
 			Password string `json:"password"`
 		}
-		var secret Secret
+		var secret secret.Secret
 
 		if result := db.First(&secret, "id = ?", id); result.Error != nil {
 			if result.Error == gorm.ErrRecordNotFound {
@@ -189,6 +196,13 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			})
 		}
 
+		secretUUID, err := uuid.Parse(id)
+		if err != nil {
+			log.Printf("invalid UUID: %v", err)
+			return err
+		}
+		scheduler.RemoveSecret(secretUUID)
+
 		// Delete after viewing (view-once behavior)
 		if result := db.Unscoped().Delete(&secret); result.Error != nil {
 			log.Printf("Failed to delete secret %s: %v", id, result.Error)
@@ -198,30 +212,4 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte) fiber.Handler {
 			"text": decryptedText,
 		})
 	}
-}
-
-func ScheduleSecretCleanup(db *gorm.DB, secretID string, expiresAt time.Time) {
-	secretUUID, err := uuid.Parse(secretID)
-	if err != nil {
-		log.Printf("invalid UUID: %v", err)
-		return
-	}
-	// Calculate duration until expiry
-	delay := time.Until(expiresAt)
-	if delay <= 0 {
-		// Already expired, delete immediately
-		db.Delete(&Secret{}, secretUUID)
-		return
-	}
-
-	// Wait until expiry
-	go func() {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		<-timer.C
-		if err := db.Delete(&Secret{}, secretUUID).Error; err != nil {
-			log.Printf("Cleanup error for secret %s: %v", secretID, err)
-		}
-	}()
 }
