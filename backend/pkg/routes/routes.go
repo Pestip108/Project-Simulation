@@ -15,4 +15,7 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, encryptionKey []byte, scheduler *h
 
 	// View a secret (and delete it)
 	api.Post("/view/:id", viewSecretHandler(db, encryptionKey, scheduler))
+
+	// Get memory metrics
+	api.Get("/metrics", metricsHandler(db))
 }

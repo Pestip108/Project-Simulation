@@ -14,6 +14,7 @@ type Secret struct {
 	Text         string    `json:"text"`
 	CreatedAt    time.Time `json:"created_at"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	DeletedAt    time.Time `json:"deleted_at"`
 	PasswordHash string    `json:"-"`
 	Nonce        []byte    `json:"nonce"`
 }

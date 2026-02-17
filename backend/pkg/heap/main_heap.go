@@ -3,6 +3,7 @@ package heap
 import (
 	"container/heap"
 	"log"
+	"os"
 	"sync"
 	"time"
 
@@ -120,12 +121,25 @@ func (s *SecretScheduler) run() {
 			expired := heap.Pop(&s.heap).(*SecretItem)
 			delete(s.indexMap, expired.ID)
 
-			if err := s.db.Delete(secret.Secret{}, "id = ?", expired.ID).Error; err != nil {
-				log.Printf("Failed to delete secret %d: %v", expired.ID, err)
-			} else {
-				log.Printf("Deleted expired secret %d", expired.ID)
+			appDebug := os.Getenv("APPDEBUG")
+			if appDebug == "" {
+				log.Fatal("APPDEBUG not set")
 			}
 
+			if appDebug == "0" {
+				if err := s.db.Delete(secret.Secret{}, "id = ?", expired.ID).Error; err != nil {
+					log.Printf("Failed to delete secret %d: %v", expired.ID, err)
+				} else {
+					log.Printf("Deleted expired secret %d", expired.ID)
+				}
+			} else {
+				if result := s.db.Model(&secret.Secret{}).Where("id = ?", expired.ID).
+					Update("deleted_at", time.Now().UTC()); result.Error != nil {
+					log.Printf("Failed to mark secret deleted %d: %v", expired.ID, result.Error)
+				} else {
+					log.Printf("Soft-Deleted expired secret %d", expired.ID)
+				}
+			}
 		}
 
 		s.mutex.Unlock()
@@ -139,10 +153,22 @@ func (s *SecretScheduler) LoadPendingSecrets() error {
 	now := time.Now().UTC()
 
 	// Delete secrets that already expired while server was down
-	if err := s.db.
-		Where("expires_at <= ?", now).
-		Delete(&secret.Secret{}).Error; err != nil {
-		return err
+	appDebug := os.Getenv("APPDEBUG")
+	if appDebug == "" {
+		log.Fatal("APPDEBUG not set")
+	}
+
+	if appDebug == "0" {
+		if err := s.db.
+			Where("expires_at <= ?", now).
+			Delete(&secret.Secret{}).Error; err != nil {
+			return err
+		}
+	} else {
+		if err := s.db.Model(&secret.Secret{}).Where("expires_at <= ?", now).
+			Update("deleted_at", time.Now().UTC()).Error; err != nil {
+			return err
+		}
 	}
 
 	var secrets []secret.Secret

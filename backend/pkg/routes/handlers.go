@@ -3,6 +3,7 @@ package routes
 import (
 	"log"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
@@ -194,12 +195,57 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 		scheduler.RemoveSecret(secret.ID)
 
 		// Delete after viewing (view-once behavior)
-		if result := db.Unscoped().Delete(&secret); result.Error != nil {
-			log.Printf("Failed to delete secret %s: %v", id, result.Error)
+		appDebug := os.Getenv("APPDEBUG")
+		if appDebug == "" {
+			log.Fatal("APPDEBUG not set")
+		}
+
+		if appDebug == "0" {
+			if result := db.Unscoped().Delete(&secret); result.Error != nil {
+				log.Printf("Failed to delete secret %s: %v", id, result.Error)
+			}
+		} else {
+			if result := db.Model(&secret).
+				Update("deleted_at", time.Now().UTC()); result.Error != nil {
+				log.Printf("Failed to mark secret deleted %s: %v", id, result.Error)
+			}
 		}
 
 		return c.JSON(fiber.Map{
 			"text": decryptedText,
+		})
+	}
+}
+
+// metricsHandler returns memory usage statistics
+func metricsHandler(db *gorm.DB) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+
+		var result float64
+		// Calculate average difference in seconds: ExpiresAt - DeletedAt
+		// Only for rows where DeletedAt is set (not zero time)
+		// SQLite specific: strftime('%s', time) returns unix epoch seconds
+		err := db.Model(&secret.Secret{}).
+			Select("COALESCE(AVG(strftime('%s', expires_at) - strftime('%s', deleted_at)), 0)").
+			Where("deleted_at > ?", "2000-01-01 00:00:00").
+			Scan(&result).Error
+
+		if err != nil {
+			log.Printf("Error calculating average time: %v", err)
+		}
+
+		var deletedCount int64
+		db.Model(&secret.Secret{}).Where("deleted_at > ?", "2000-01-01 00:00:00").Count(&deletedCount)
+
+		return c.JSON(fiber.Map{
+			"Alloc":        m.Alloc,
+			"TotalAlloc":   m.TotalAlloc,
+			"Sys":          m.Sys,
+			"NumGC":        m.NumGC,
+			"TimeDiffAvg":  result, // In seconds
+			"DeletedCount": deletedCount,
 		})
 	}
 }
