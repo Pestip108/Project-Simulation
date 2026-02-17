@@ -36,8 +36,11 @@ PORT=4000
 FRONTEND_URL=http://localhost:3000
 CORS_ALLOWED_ORIGINS=http://localhost:3000
 ENCRYPTION_KEY=your-32-byte-secret-key-goes-here
-APPDEBUG=0 //0: Real Mode, 1: Debug Mode
+APPDEBUG=0
 ```
+For APPDEBUG: 
+    0: Real Mode
+    1: Debug Mode
 
 ### Frontend (config.js)
 Ensure `frontend/config.js` is configured with your backend URL:
