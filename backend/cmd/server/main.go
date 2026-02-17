@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
@@ -55,7 +56,10 @@ func main() {
 		log.Fatal("Failed to auto migrate:", err)
 	}
 
-	startupCleanerScheduler(db)
+	scheduler := heap.NewSecretScheduler(db)
+	if err := scheduler.LoadPendingSecrets(); err != nil {
+		log.Fatal(err)
+	}
 
 	// Initialize Fiber app
 	app := fiber.New()
@@ -87,13 +91,4 @@ func main() {
 	app.Static("/", "../../frontend")
 
 	log.Fatal(app.Listen(":" + port))
-}
-
-func startupCleanerScheduler(db *gorm.DB) {
-	var secrets []routes.Secret
-	db.Where("expires_at > ?", time.Now().UTC()).Find(&secrets)
-
-	for _, s := range secrets {
-		routes.ScheduleSecretCleanup(db, s.ID, s.ExpiresAt)
-	}
 }
