@@ -13,6 +13,7 @@ A secure, "view-once" message sharing application. Users can share encrypted tex
     - Expiration limit: Max 7 days.
     - ID Validation: Strict UUID format checking.
 - **Rate Limiting**: Protection against brute-force and spam requests.
+- **Real-time Monitoring**: Tools to track memory usage and secret deletion metrics.
 
 ## 🛠 Tech Stack
 
@@ -35,6 +36,7 @@ PORT=4000
 FRONTEND_URL=http://localhost:3000
 CORS_ALLOWED_ORIGINS=http://localhost:3000
 ENCRYPTION_KEY=your-32-byte-secret-key-goes-here
+APPDEBUG=0 //0: Real Mode, 1: Debug Mode
 ```
 
 ### Frontend (config.js)
@@ -72,6 +74,26 @@ Creates a new encrypted secret.
 Retrieves and deletes a secret.
 - **Body**: `{ "password": "string" }`
 - **Validation**: `:id` must be a valid UUID.
+
+### `GET /api/metrics`
+Returns runtime memory statistics.
+- **Response**: `{ "Alloc": int, "TotalAlloc": int, "Sys": int, "NumGC": int, "TimeDiffAvg": float, "DeletedCount": int }`
+
+## 📊 Monitoring & Tools
+
+### Memory Monitor
+A real-time console dashboard to view server memory usage, garbage collection stats, and deletion metrics.
+```bash
+cd backend
+go run cmd/monitor/main.go
+```
+
+### Database Seeder
+A stress-testing tool that concurrently creates 500,000 encrypted secrets.
+```bash
+cd backend
+go run cmd/seeder/main.go
+```
 
 ## 🔒 Security Summary
 This project prioritized data privacy and integrity:
