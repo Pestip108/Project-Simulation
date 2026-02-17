@@ -109,12 +109,7 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			})
 		}
 
-		secretUUID, err := uuid.Parse(secret.ID)
-		if err != nil {
-			log.Printf("invalid UUID: %v", err)
-			return err
-		}
-		scheduler.AddSecret(secretUUID, secret.ExpiresAt)
+		scheduler.AddSecret(secret.ID, secret.ExpiresAt)
 
 		frontendURL := os.Getenv("FRONTEND_URL")
 		if frontendURL == "" {
@@ -123,7 +118,7 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 
 		return c.JSON(fiber.Map{
 			"id":   secret.ID,
-			"link": frontendURL + "/view.html?id=" + secret.ID,
+			"link": frontendURL + "/view.html?id=" + secret.UUID,
 		})
 	}
 }
@@ -144,7 +139,7 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 		}
 		var secret secret.Secret
 
-		if result := db.First(&secret, "id = ?", id); result.Error != nil {
+		if result := db.First(&secret, "uuid = ?", id); result.Error != nil {
 			if result.Error == gorm.ErrRecordNotFound {
 				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 					"error": "404 Secret Not Found",
@@ -196,12 +191,7 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			})
 		}
 
-		secretUUID, err := uuid.Parse(id)
-		if err != nil {
-			log.Printf("invalid UUID: %v", err)
-			return err
-		}
-		scheduler.RemoveSecret(secretUUID)
+		scheduler.RemoveSecret(secret.ID)
 
 		// Delete after viewing (view-once behavior)
 		if result := db.Unscoped().Delete(&secret); result.Error != nil {

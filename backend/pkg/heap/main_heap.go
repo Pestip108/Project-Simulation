@@ -7,12 +7,11 @@ import (
 	"time"
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
-	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 type SecretItem struct {
-	ID        uuid.UUID
+	ID        int64
 	ExpiresAt time.Time
 	index     int // required by heap.Interface
 }
@@ -50,13 +49,13 @@ type SecretScheduler struct {
 	heap     SecretHeap
 	mutex    sync.Mutex
 	cond     *sync.Cond
-	indexMap map[uuid.UUID]*SecretItem
+	indexMap map[int64]*SecretItem
 }
 
 func NewSecretScheduler(db *gorm.DB) *SecretScheduler {
 	s := &SecretScheduler{
 		db:       db,
-		indexMap: make(map[uuid.UUID]*SecretItem),
+		indexMap: make(map[int64]*SecretItem),
 	}
 	s.cond = sync.NewCond(&s.mutex)
 	heap.Init(&s.heap)
@@ -65,7 +64,7 @@ func NewSecretScheduler(db *gorm.DB) *SecretScheduler {
 }
 
 // AddSecret schedules a secret for expiry
-func (s *SecretScheduler) AddSecret(id uuid.UUID, expiresAt time.Time) {
+func (s *SecretScheduler) AddSecret(id int64, expiresAt time.Time) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -80,7 +79,7 @@ func (s *SecretScheduler) AddSecret(id uuid.UUID, expiresAt time.Time) {
 }
 
 // RemoveSecret removes a secret dynamically (e.g., consumed on read)
-func (s *SecretScheduler) RemoveSecret(id uuid.UUID) {
+func (s *SecretScheduler) RemoveSecret(id int64) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
@@ -122,9 +121,9 @@ func (s *SecretScheduler) run() {
 			delete(s.indexMap, expired.ID)
 
 			if err := s.db.Delete(secret.Secret{}, "id = ?", expired.ID).Error; err != nil {
-				log.Printf("Failed to delete secret %s: %v", expired.ID, err)
+				log.Printf("Failed to delete secret %d: %v", expired.ID, err)
 			} else {
-				log.Printf("Deleted expired secret %s", expired.ID)
+				log.Printf("Deleted expired secret %d", expired.ID)
 			}
 
 		}
@@ -152,12 +151,7 @@ func (s *SecretScheduler) LoadPendingSecrets() error {
 	}
 
 	for _, sec := range secrets {
-		secretUUID, err := uuid.Parse(sec.ID)
-		if err != nil {
-			log.Printf("invalid UUID: %v", err)
-			return err
-		}
-		s.AddSecret(secretUUID, sec.ExpiresAt)
+		s.AddSecret(sec.ID, sec.ExpiresAt)
 	}
 	return nil
 }

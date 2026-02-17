@@ -73,18 +73,25 @@ func main() {
 	}))
 
 	// Setup Rate Limit
-	app.Use(limiter.New(limiter.Config{
-		Max:        20,              // max requests
-		Expiration: 1 * time.Minute, // per time window
-		KeyGenerator: func(c *fiber.Ctx) string {
-			return c.IP() // limit per IP
-		},
-		LimitReached: func(c *fiber.Ctx) error {
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-				"error": "Too many requests. Please try again later.",
-			})
-		},
-	}))
+	appDebug := os.Getenv("APPDEBUG")
+	if appDebug == "" {
+		log.Fatal("APPDEBUG not set")
+	}
+
+	if appDebug == "0" {
+		app.Use(limiter.New(limiter.Config{
+			Max:        20,              // max requests
+			Expiration: 1 * time.Minute, // per time window
+			KeyGenerator: func(c *fiber.Ctx) string {
+				return c.IP() // limit per IP
+			},
+			LimitReached: func(c *fiber.Ctx) error {
+				return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+					"error": "Too many requests. Please try again later.",
+				})
+			},
+		}))
+	}
 
 	// Setup routes
 	routes.SetupRoutes(app, db, encryptionKey, scheduler)
