@@ -42,8 +42,8 @@ ENCRYPTION_KEY=your-32-byte-secret-key-goes-here
 APPDEBUG=0
 ```
 For APPDEBUG: 
-    0: Real Mode
-    1: Debug Mode
+- 0: Real Mode (True Delete from the DB)
+- 1: Debug Mode (Soft Delete from the DB)
 
 ### Frontend (config.js)
 - Option 1: Server-Side Rendered HTML (no JavaScript, powered by Fiber templates)
