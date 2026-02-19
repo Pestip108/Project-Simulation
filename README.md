@@ -14,6 +14,9 @@ A secure, "view-once" message sharing application. Users can share encrypted tex
     - ID Validation: Strict UUID format checking.
 - **Rate Limiting**: Protection against brute-force and spam requests.
 - **Real-time Monitoring**: Tools to track memory usage and secret deletion metrics.
+- **Dual Frontend Support**:
+    - JSON API for dynamic JS clients
+    - Server-side rendered HTML for no-JS usage
 
 ## 🛠 Tech Stack
 
@@ -43,6 +46,10 @@ For APPDEBUG:
     1: Debug Mode
 
 ### Frontend (config.js)
+- Option 1: Server-Side Rendered HTML (no JavaScript, powered by Fiber templates)
+- Option 2: Vanilla HTML, CSS, and JavaScript (ES6+) using the JSON API
+
+#### Option 2:
 Ensure `frontend/config.js` is configured with your backend URL:
 ```javascript
 window.APP_CONFIG = {
@@ -59,6 +66,11 @@ go run cmd/server/main.go
 ```
 
 ### 2. Run the Frontend
+
+#### Option 1 — No JavaScript (Recommended):
+Simply navigate to `http://localhost:4000/`.
+
+#### Option 2 — JavaScript Frontend (Legacy):
 ```bash
 cd frontend
 http-server ./ -p 3000 -c-1 --cors
@@ -68,19 +80,46 @@ Once running, navigate to `http://localhost:3000/index.html`.
 
 ## 🔌 API Endpoints
 
-### `POST /api/share`
+#### `POST /api/share`
 Creates a new encrypted secret.
 - **Body**: `{ "text": "string", "expiresInMinutes": int, "password": "string" }`
 - **Constraints**: Text < 10KB, Password 6-72 chars, Expiration < 7 days.
 
-### `POST /api/view/:id`
+#### `POST /api/view/:id`
 Retrieves and deletes a secret.
 - **Body**: `{ "password": "string" }`
 - **Validation**: `:id` must be a valid UUID.
 
-### `GET /api/metrics`
+#### `GET /api/metrics`
 Returns runtime memory statistics.
 - **Response**: `{ "Alloc": int, "TotalAlloc": int, "Sys": int, "NumGC": int, "TimeDiffAvg": float, "DeletedCount": int }`
+
+## Server-Side Rendered Routes (No JS)
+
+The application now supports a fully server-rendered mode using Fiber templates.
+
+### Pages
+
+#### `GET /`
+  - Displays the "Create Secret" form
+
+#### `POST /share`
+  - Processes form submission
+  - Creates encrypted secret
+  - Returns a page with the generated link
+
+#### `GET /view/:id`
+  - Displays password input form
+
+#### `POST /view/:id`
+  - Decrypts and displays the secret
+  - Deletes it after viewing
+
+### Notes
+
+- No JavaScript is required
+- Uses standard HTML forms and redirects
+- Ideal for simplicity, security, and accessibility
 
 ## 📊 Monitoring & Tools
 

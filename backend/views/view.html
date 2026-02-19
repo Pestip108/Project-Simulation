@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View A Secret</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>Secret Message</h1>
+
+        {{if .SecretText}}
+        <div id="message">{{.SecretText}}</div>
+        <p><small>This message has been deleted from the server.</small></p>
+        {{else}}
+        {{if .Error}}
+        <p class="error">{{.Error}}</p>
+        {{end}}
+
+        {{if .ID}}
+        <form method="POST" action="/view/{{.ID}}">
+            <input type="password" name="password" placeholder="Password" required autocomplete="off" />
+            <button type="submit">Reveal Secret</button>
+        </form>
+        {{end}}
+        {{end}}
+    </div>
+</body>
+
+</html>

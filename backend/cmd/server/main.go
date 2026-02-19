@@ -12,6 +12,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
+	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
 	"gorm.io/gorm"
 )
@@ -63,12 +64,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Initialize Fiber app
-	app := fiber.New()
+	// Initialize template engine pointing at ./views
+	engine := html.New("./views", ".html")
 
-	// Configure CORS
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: allowedOrigins, // For development mostly
+	// Initialize Fiber app with template engine
+	app := fiber.New(fiber.Config{
+		Views: engine,
+	})
+
+	// Configure CORS for the JSON API routes
+	app.Use("/api", cors.New(cors.Config{
+		AllowOrigins: allowedOrigins,
 		AllowHeaders: "Origin, Content-Type, Accept",
 	}))
 
@@ -93,11 +99,11 @@ func main() {
 		}))
 	}
 
-	// Setup routes
+	// Setup routes (API + page routes)
 	routes.SetupRoutes(app, db, encryptionKey, scheduler)
 
-	// Serve static files for frontend
-	app.Static("/", "../../frontend")
+	// Serve static files (CSS, etc.) from ./static
+	app.Static("/static", "./static")
 
 	log.Fatal(app.Listen(":" + port))
 }

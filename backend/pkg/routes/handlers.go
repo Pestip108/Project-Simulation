@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"runtime"
@@ -246,6 +247,171 @@ func metricsHandler(db *gorm.DB) fiber.Handler {
 			"NumGC":        m.NumGC,
 			"TimeDiffAvg":  result, // In seconds
 			"DeletedCount": deletedCount,
+		})
+	}
+}
+
+// ── Page handlers (no JS, HTML form-based) ────────────────────────────────────
+
+// indexPageHandler renders the home page with the create-secret form.
+func indexPageHandler() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		return c.Render("index", fiber.Map{})
+	}
+}
+
+// sharePageHandler handles the form POST from the home page, creates the secret,
+// and re-renders the home page with a shareable link (or an error message).
+func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		text := c.FormValue("text")
+		password := c.FormValue("password")
+		expiresInMinutesStr := c.FormValue("expiresInMinutes")
+
+		renderErr := func(msg string) error {
+			return c.Status(fiber.StatusBadRequest).Render("index", fiber.Map{
+				"Error": msg,
+			})
+		}
+
+		if text == "" {
+			return renderErr("Text is required")
+		}
+		if len(text) > MaxTextLength {
+			return renderErr("Text is too long (max 10KB)")
+		}
+
+		expiresInMinutes := 0
+		if _, err := fmt.Sscanf(expiresInMinutesStr, "%d", &expiresInMinutes); err != nil || expiresInMinutes <= 0 {
+			return renderErr("Expiration time must be greater than 0 minutes")
+		}
+		if expiresInMinutes > MaxExpirationMinutes {
+			return renderErr("Expiration time cannot exceed 7 days")
+		}
+
+		if password == "" {
+			return renderErr("Password is required")
+		}
+		if len(password) < MinPasswordLength {
+			return renderErr("Password must be at least 6 characters long")
+		}
+		if len(password) > MaxPasswordLength {
+			return renderErr("Password is too long (max 72 characters)")
+		}
+
+		encryptedData, err := encryption.Encrypt(text, encryptionKey)
+		if err != nil {
+			log.Printf("Encryption error: %v", err)
+			return renderErr("Failed to encrypt secret")
+		}
+
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return renderErr("Failed to hash password")
+		}
+
+		newSecret := secret.Secret{
+			Text:         string(encryptedData.Ciphertext),
+			Nonce:        encryptedData.Nonce,
+			CreatedAt:    time.Now().UTC(),
+			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
+			PasswordHash: string(passwordHash),
+		}
+
+		if result := db.Create(&newSecret); result.Error != nil {
+			return renderErr("Could not save secret")
+		}
+
+		scheduler.AddSecret(newSecret.ID, newSecret.ExpiresAt)
+
+		// Build the shareable link pointing to the view page on the same server
+		scheme := "http"
+		link := scheme + "://" + c.Hostname() + "/view/" + newSecret.UUID
+
+		return c.Render("index", fiber.Map{
+			"Link": link,
+		})
+	}
+}
+
+// viewPageHandler renders the view page with the password form (GET).
+// The secret UUID from the URL is passed to the template so the form knows where to POST.
+func viewPageHandler() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		id := c.Params("id")
+		if _, err := uuid.Parse(id); err != nil {
+			return c.Status(fiber.StatusBadRequest).Render("view", fiber.Map{
+				"Error": "Invalid secret ID format",
+			})
+		}
+		return c.Render("view", fiber.Map{"ID": id})
+	}
+}
+
+// submitViewPageHandler handles the password form POST, decrypts the secret,
+// and re-renders the view page with the plaintext (or an error message).
+func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		id := c.Params("id")
+
+		renderErr := func(status int, msg string) error {
+			return c.Status(status).Render("view", fiber.Map{
+				"ID":    id,
+				"Error": msg,
+			})
+		}
+
+		if _, err := uuid.Parse(id); err != nil {
+			return renderErr(fiber.StatusBadRequest, "Invalid secret ID format")
+		}
+
+		var s secret.Secret
+		if result := db.First(&s, "uuid = ?", id); result.Error != nil {
+			if result.Error == gorm.ErrRecordNotFound {
+				return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
+			}
+			return renderErr(fiber.StatusInternalServerError, "Database error")
+		}
+
+		password := c.FormValue("password")
+		if password == "" {
+			return renderErr(fiber.StatusBadRequest, "Password is required")
+		}
+
+		if err := bcrypt.CompareHashAndPassword([]byte(s.PasswordHash), []byte(password)); err != nil {
+			return renderErr(fiber.StatusUnauthorized, "Invalid password")
+		}
+
+		if time.Now().UTC().After(s.ExpiresAt) {
+			db.Delete(&s)
+			return renderErr(fiber.StatusGone, "This secret has expired and was deleted")
+		}
+
+		encryptedData := &encryption.EncryptedData{
+			Ciphertext: []byte(s.Text),
+			Nonce:      s.Nonce,
+		}
+
+		decryptedText, err := encryption.Decrypt(encryptedData, encryptionKey)
+		if err != nil {
+			return renderErr(fiber.StatusInternalServerError, "Failed to decrypt secret")
+		}
+
+		scheduler.RemoveSecret(s.ID)
+
+		appDebug := os.Getenv("APPDEBUG")
+		if appDebug == "0" {
+			if result := db.Unscoped().Delete(&s); result.Error != nil {
+				log.Printf("Failed to delete secret %s: %v", id, result.Error)
+			}
+		} else {
+			if result := db.Model(&s).Update("deleted_at", time.Now().UTC()); result.Error != nil {
+				log.Printf("Failed to mark secret deleted %s: %v", id, result.Error)
+			}
+		}
+
+		return c.Render("view", fiber.Map{
+			"SecretText": decryptedText,
 		})
 	}
 }

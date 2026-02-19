@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Share A Secret</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <h1>Share a Secret</h1>
+
+        {{if .Error}}
+        <p class="error">{{.Error}}</p>
+        {{end}}
+
+        {{if .Link}}
+        <div id="result">
+            <p>Secret link generated (view once):</p>
+            <a href="{{.Link}}">{{.Link}}</a>
+            <br />
+            <form method="GET" action="/">
+                <button type="submit">Back</button>
+            </form>
+        </div>
+        {{end}}
+
+        {{if not .Link}}
+        <form method="POST" action="/share">
+            <textarea name="text" placeholder="Enter your secret message here..." required maxlength="10000"></textarea>
+
+            <label for="expiration">Expires in:</label>
+            <select name="expiresInMinutes" id="expiration"
+                style="width: 100%; padding: 0.5rem; margin-bottom: 1rem; border-radius: 4px; border: 1px solid #ccc;">
+                <option value="1">1 Minute</option>
+                <option value="60">1 Hour</option>
+                <option value="1440" selected>24 Hours</option>
+                <option value="10080">7 Days</option>
+            </select>
+
+            <input type="password" name="password" placeholder="Password (min 6 chars)" required autocomplete="off"
+                minlength="6" maxlength="72" />
+
+            <button type="submit">Generate Link</button>
+        </form>
+        {{end}}
+    </div>
+</body>
+
+</html>
