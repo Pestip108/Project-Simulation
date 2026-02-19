@@ -152,6 +152,15 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			})
 		}
 
+		// In DEBUG MODE, secrets are soft-deleted (DeletedAt is set manually).
+		// Since DeletedAt is a plain time.Time (not gorm.DeletedAt), GORM does
+		// not filter them out automatically, so we must check explicitly.
+		if !secret.DeletedAt.IsZero() {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "404 Secret Not Found",
+			})
+		}
+
 		if err := c.BodyParser(&input); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Cannot parse JSON",
@@ -371,6 +380,13 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 				return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
 			}
 			return renderErr(fiber.StatusInternalServerError, "Database error")
+		}
+
+		// In DEBUG MODE, secrets are soft-deleted (DeletedAt is set manually).
+		// Since DeletedAt is a plain time.Time (not gorm.DeletedAt), GORM does
+		// not filter them out automatically, so we must check explicitly.
+		if !s.DeletedAt.IsZero() {
+			return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
 		}
 
 		password := c.FormValue("password")
