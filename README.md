@@ -1,144 +1,196 @@
 # Share a Secret (Project-Simulation)
 
-A secure, "view-once" message sharing application. Users can share encrypted text messages that are automatically deleted after being viewed or after a specified expiration time.
+A secure, "view-once" message sharing application. Users can share encrypted text messages that are automatically deleted after being viewed once, or after a specified expiration time.
 
 ## 🚀 Features
 
 - **End-to-End Encryption**: Messages are encrypted using AES-256-GCM before storage.
 - **View-Once Logic**: Secrets are permanently deleted immediately after the first successful retrieval.
-- **Self-Destruction**: Expired secrets are automatically cleaned up by a background worker (in server mode).
+- **Self-Destruction**: Expired secrets are automatically cleaned up by a background scheduler (min-heap based).
+- **Password Protection**: Every secret requires a password, hashed with bcrypt before storage.
 - **Security Hardening**:
-    - Max text length: 10KB.
-    - Password requirements: 6-72 characters (hashed with bcrypt).
-    - Expiration limit: Max 7 days.
-    - ID Validation: Strict UUID format checking.
-- **Rate Limiting**: Protection against brute-force and spam requests.
-- **Real-time Monitoring**: Tools to track memory usage and secret deletion metrics.
+    - Max text length: 10KB
+    - Password requirements: 6–72 characters
+    - Expiration limit: Max 7 days
+    - ID Validation: Strict UUID format checking on every request
+- **Rate Limiting**: Protection against brute-force and spam (20 req/min per IP in production).
+- **Real-time Monitoring**: Console dashboard for memory usage, GC stats, and secret deletion metrics.
 - **Dual Frontend Support**:
+    - Server-side rendered HTML (no JavaScript required)
     - JSON API for dynamic JS clients
-    - Server-side rendered HTML for no-JS usage
+- **Docker Ready**: All assets (HTML templates, CSS) are embedded into the binary via `go:embed` — no volume mounts needed for static files.
 
 ## 🛠 Tech Stack
 
-- **Backend**: [Go](https://go.dev/) with [Fiber](https://gofiber.io/) web framework.
-- **Database**: [SQLite](https://www.sqlite.org/) managed via [GORM](https://gorm.io/).
-- **Frontend**: Vanilla HTML5, CSS3, and JavaScript (ES6+).
-- **Security**: `crypto/aes` for encryption, `golang.org/x/crypto/bcrypt` for password hashing.
+| Layer       | Technology |
+|-------------|-----------|
+| Language    | [Go](https://go.dev/) 1.25.4 |
+| Web Framework | [Fiber v2](https://gofiber.io/) |
+| Templates   | Fiber HTML engine (`gofiber/template/html/v2`) |
+| Database    | [SQLite](https://www.sqlite.org/) via [GORM](https://gorm.io/) + [glebarez/sqlite](https://github.com/glebarez/sqlite) (CGO) |
+| Encryption  | `crypto/aes` (AES-256-GCM) |
+| Password Hashing | `golang.org/x/crypto/bcrypt` |
+| Serverless  | [AWS Lambda](https://aws.amazon.com/lambda/) via `aws-lambda-go-api-proxy` |
 
 ## 📋 Prerequisites
 
-- Go 1.25.4 or higher installed.
-- `http-server` (or similar) for the frontend.
+**Local development:**
+- Go 1.25.4+
+- GCC (for CGO/SQLite) — on Windows, use [TDM-GCC](https://jmeubank.github.io/tdm-gcc/)
+
+**Docker deployment:**
+- Docker
 
 ## ⚙️ Configuration
 
-### Backend (.env)
 Create a `.env` file in the `backend/` directory:
+
 ```env
-PORT=4000
-FRONTEND_URL=http://localhost:3000
-CORS_ALLOWED_ORIGINS=http://localhost:3000
+PORT=8080
+FRONTEND_URL=http://localhost:8080
+CORS_ALLOWED_ORIGINS=http://localhost:8080
 ENCRYPTION_KEY=your-32-byte-secret-key-goes-here
 APPDEBUG=0
 ```
-For APPDEBUG: 
-- 0: Real Mode (True Delete from the DB)
-- 1: Debug Mode (Soft Delete from the DB)
 
-### Frontend (config.js)
-- Option 1: Server-Side Rendered HTML (no JavaScript, powered by Fiber templates)
-- Option 2: Vanilla HTML, CSS, and JavaScript (ES6+) using the JSON API
+| Variable | Description |
+|----------|-------------|
+| `PORT` | Port the server listens on |
+| `FRONTEND_URL` | Base URL used to build shareable links |
+| `CORS_ALLOWED_ORIGINS` | Allowed CORS origins for the JSON API |
+| `ENCRYPTION_KEY` | **Must be exactly 32 bytes** (AES-256) |
+| `APPDEBUG` | `0` = production (hard delete), `1` = debug (soft delete) |
 
-#### Option 2:
-Ensure `frontend/config.js` is configured with your backend URL:
+## 📂 Project Structure
+
+```
+Project-Simulation/
+├── Dockerfile
+├── backend/
+│   ├── cmd/
+│   │   ├── server/      # Main HTTP server entry point
+│   │   ├── lambda/      # AWS Lambda entry point
+│   │   ├── monitor/     # Real-time memory/metrics dashboard
+│   │   ├── seeder/      # Stress-test DB seeder (500k secrets)
+│   │   └── debug_db/    # Database inspection utility
+│   ├── pkg/
+│   │   ├── routes/      # HTTP handlers and route setup
+│   │   ├── secret/      # Secret model
+│   │   ├── encryption/  # AES-256-GCM encrypt/decrypt
+│   │   └── heap/        # Min-heap based expiry scheduler
+│   ├── views/           # HTML templates (embedded into binary)
+│   │   ├── index.html
+│   │   └── view.html
+│   ├── static/          # Static assets (embedded into binary)
+│   │   └── style.css
+│   ├── templates.go     # go:embed declarations
+│   └── .env
+└── frontend/            # Legacy JS frontend (optional)
+```
+
+## 🐳 Docker Deployment (Recommended)
+
+### Build the image
+
+```bash
+docker build -t my-go-app .
+```
+
+### Run the container
+
+```bash
+docker run -p 8080:8080 \
+  --env-file backend/.env \
+  -v "${PWD}/data:/app/data" \
+  my-go-app
+```
+
+The `-v` flag mounts a local `data/` directory to persist the SQLite database across container restarts. All HTML templates and CSS are embedded into the binary, so no additional volume mounts are needed.
+
+Navigate to `http://localhost:8080/`.
+
+## 💻 Local Development
+
+### Run the server
+
+```bash
+cd backend
+go run ./cmd/server
+```
+
+Navigate to `http://localhost:<PORT>/`.
+
+### Optional: Legacy JS Frontend
+
+Configure `frontend/config.js`:
 ```javascript
 window.APP_CONFIG = {
-    API_URL: "http://localhost:4000"
+    API_URL: "http://localhost:8080"
 };
 ```
 
-## ⚙️ Setup & Installation
-
-### 1. Run the Backend Server
-```bash
-cd backend
-go run cmd/server/main.go
-```
-
-### 2. Run the Frontend
-
-#### Option 1 — No JavaScript (Recommended):
-Simply navigate to `http://localhost:4000/`.
-
-#### Option 2 — JavaScript Frontend (Legacy):
+Then serve it:
 ```bash
 cd frontend
 http-server ./ -p 3000 -c-1 --cors
 ```
 
-Once running, navigate to `http://localhost:3000/index.html`.
-
 ## 🔌 API Endpoints
 
-#### `POST /api/share`
+### `POST /api/share`
 Creates a new encrypted secret.
 - **Body**: `{ "text": "string", "expiresInMinutes": int, "password": "string" }`
-- **Constraints**: Text < 10KB, Password 6-72 chars, Expiration < 7 days.
+- **Constraints**: Text < 10KB, Password 6–72 chars, Expiration ≤ 7 days (10080 min)
 
-#### `POST /api/view/:id`
-Retrieves and deletes a secret.
+### `POST /api/view/:id`
+Retrieves and permanently deletes a secret.
 - **Body**: `{ "password": "string" }`
-- **Validation**: `:id` must be a valid UUID.
+- **Notes**: `:id` must be a valid UUID. Secret is deleted on success.
 
-#### `GET /api/metrics`
-Returns runtime memory statistics.
-- **Response**: `{ "Alloc": int, "TotalAlloc": int, "Sys": int, "NumGC": int, "TimeDiffAvg": float, "DeletedCount": int }`
+### `GET /api/metrics`
+Returns runtime memory and deletion statistics.
+- **Response**: `{ "Alloc", "TotalAlloc", "Sys", "NumGC", "TimeDiffAvg", "DeletedCount" }`
 
-## Server-Side Rendered Routes (No JS)
+## 🖥 Server-Side Rendered Routes (No JS)
 
-The application now supports a fully server-rendered mode using Fiber templates.
+| Method | Route | Description |
+|--------|-------|-------------|
+| `GET`  | `/` | Create-secret form |
+| `POST` | `/share` | Submit form → create secret → show link |
+| `GET`  | `/view/:id` | Password input form |
+| `POST` | `/view/:id` | Decrypt, display, and delete secret |
 
-### Pages
+No JavaScript required. Uses standard HTML forms.
 
-#### `GET /`
-  - Displays the "Create Secret" form
-
-#### `POST /share`
-  - Processes form submission
-  - Creates encrypted secret
-  - Returns a page with the generated link
-
-#### `GET /view/:id`
-  - Displays password input form
-
-#### `POST /view/:id`
-  - Decrypts and displays the secret
-  - Deletes it after viewing
-
-### Notes
-
-- No JavaScript is required
-- Uses standard HTML forms and redirects
-- Ideal for simplicity, security, and accessibility
-
-## 📊 Monitoring & Tools
+## 📊 Dev Tools
 
 ### Memory Monitor
-A real-time console dashboard to view server memory usage, garbage collection stats, and deletion metrics.
+Real-time console dashboard for memory usage, GC stats, and deletion metrics:
 ```bash
 cd backend
-go run cmd/monitor/main.go
+go run ./cmd/monitor
 ```
 
 ### Database Seeder
-A stress-testing tool that concurrently creates 500,000 encrypted secrets.
+Stress-testing tool that concurrently inserts 500,000 encrypted secrets:
 ```bash
 cd backend
-go run cmd/seeder/main.go
+go run ./cmd/seeder
+```
+
+### Debug DB
+Inspect the raw database contents:
+```bash
+cd backend
+go run ./cmd/debug_db
 ```
 
 ## 🔒 Security Summary
-This project prioritized data privacy and integrity:
-- **Zero-knowledge**: Plain-text messages and passwords never touch the disk.
-- **Integrity**: Each encryption uses a unique nonce.
-- **Volatility**: Data is purged immediately upon viewing or expiration.
+
+| Concern | Approach |
+|---------|----------|
+| Message confidentiality | AES-256-GCM encryption; plaintext never stored |
+| Password security | bcrypt hashing; plaintext never stored |
+| Uniqueness / replay | Random nonce per encryption; UUID per secret |
+| Expiration | Hard-deleted at view time or by background scheduler |
+| Abuse prevention | Rate limiting (20 req/min/IP), input validation, UUID enforcement |
