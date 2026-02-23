@@ -1,16 +1,20 @@
 package main
 
 import (
+	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
+	template "github.com/Pestip108/Project-Simulation/backend"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
@@ -48,7 +52,7 @@ func init() {
 }
 
 func main() {
-	db, err := gorm.Open(sqlite.Open("secrets.db"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("data/secrets.db"), &gorm.Config{})
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
@@ -64,12 +68,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Initialize template engine pointing at ./views
-	engine := html.New("./views", ".html")
+	// Strip the "views/" prefix from the embedded FS so that templates
+	// are registered as "index" and "view" (not "views/index", "views/view").
+	viewsSubFS, err := fs.Sub(template.ViewsFS, "views")
+	if err != nil {
+		log.Fatal("Failed to create views sub-filesystem:", err)
+	}
 
 	// Initialize Fiber app with template engine
 	app := fiber.New(fiber.Config{
-		Views: engine,
+		Views: html.NewFileSystem(http.FS(viewsSubFS), ".html"),
 	})
 
 	// Configure CORS for the JSON API routes
@@ -102,8 +110,14 @@ func main() {
 	// Setup routes (API + page routes)
 	routes.SetupRoutes(app, db, encryptionKey, scheduler)
 
-	// Serve static files (CSS, etc.) from ./static
-	app.Static("/static", "./static")
+	// Serve embedded static files (CSS, etc.) from the binary
+	staticSubFS, err := fs.Sub(template.StaticFS, "static")
+	if err != nil {
+		log.Fatal("Failed to create static sub-filesystem:", err)
+	}
+	app.Use("/static", filesystem.New(filesystem.Config{
+		Root: http.FS(staticSubFS),
+	}))
 
 	log.Fatal(app.Listen(":" + port))
 }

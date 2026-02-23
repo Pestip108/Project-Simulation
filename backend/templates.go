@@ -1,0 +1,9 @@
+package template
+
+import "embed"
+
+//go:embed views/*
+var ViewsFS embed.FS
+
+//go:embed static/*
+var StaticFS embed.FS
