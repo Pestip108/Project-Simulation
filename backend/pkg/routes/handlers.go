@@ -34,6 +34,7 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		var password string
 		var isFile bool
 		var fileName string
+		var fileContentBytes []byte
 
 		if file, err := c.FormFile("file"); err == nil {
 			isFile = true
@@ -53,47 +54,61 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 					"error": "Failed to read file",
 				})
 			}
-			text = buf.String()
+			fileContentBytes = buf.Bytes()
+		}
 
-			expiresInMinutesStr := c.FormValue("expiresInMinutes")
-			fmt.Sscanf(expiresInMinutesStr, "%d", &expiresInMinutes)
-			password = c.FormValue("password")
-		} else {
+		// Pull from multipart form if present
+		text = c.FormValue("text")
+		password = c.FormValue("password")
+		expiresInMinutesStr := c.FormValue("expiresInMinutes")
+		fmt.Sscanf(expiresInMinutesStr, "%d", &expiresInMinutes)
+
+		// Fallback to JSON API
+		if text == "" && !isFile {
 			var input struct {
 				Text             string `json:"text"`
 				ExpiresInMinutes int    `json:"expiresInMinutes"`
 				Password         string `json:"password"`
 			}
-
-			if err := c.BodyParser(&input); err != nil {
-				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-					"error": "Cannot parse request body",
-				})
+			if err := c.BodyParser(&input); err == nil {
+				text = input.Text
+				expiresInMinutes = input.ExpiresInMinutes
+				password = input.Password
 			}
-			text = input.Text
-			expiresInMinutes = input.ExpiresInMinutes
-			password = input.Password
 		}
 
-		if text == "" {
+		if text == "" && !isFile {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Content is required",
+				"error": "Either text or a file is required",
 			})
 		}
 
-		if len(text) > MaxTextLength {
+		if len(text) > MaxTextLength || len(fileContentBytes) > MaxTextLength {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Content is too long (max 10MB)",
 			})
 		}
 
-		// Encrypt the text before saving
-		encryptedData, err := encryption.Encrypt(text, encryptionKey)
-		if err != nil {
-			log.Printf("Encryption error: %v", err)
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to encrypt secret",
-			})
+		var encryptedTextNonce []byte
+		var encryptedTextString string
+		if text != "" {
+			encData, err := encryption.Encrypt(text, encryptionKey)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt text"})
+			}
+			encryptedTextNonce = encData.Nonce
+			encryptedTextString = string(encData.Ciphertext)
+		}
+
+		var encryptedFileNonce []byte
+		var encryptedFileBytes []byte
+		if isFile {
+			encData, err := encryption.Encrypt(string(fileContentBytes), encryptionKey)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt file"})
+			}
+			encryptedFileNonce = encData.Nonce
+			encryptedFileBytes = encData.Ciphertext
 		}
 
 		if expiresInMinutes <= 0 {
@@ -136,10 +151,12 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		}
 
 		secret := secret.Secret{
-			Text:         string(encryptedData.Ciphertext),
+			Text:         encryptedTextString,
 			IsFile:       isFile,
 			FileName:     fileName,
-			Nonce:        encryptedData.Nonce,
+			FileContent:  encryptedFileBytes,
+			FileNonce:    encryptedFileNonce,
+			Nonce:        encryptedTextNonce,
 			CreatedAt:    time.Now().UTC(),
 			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
 			PasswordHash: string(passwordHash)}
@@ -228,17 +245,30 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			})
 		}
 
-		// Reconstruct EncryptedData from stored fields
-		encryptedData := &encryption.EncryptedData{
-			Ciphertext: []byte(secret.Text),
-			Nonce:      secret.Nonce,
+		var decryptedText string
+		if secret.Text != "" {
+			encData := &encryption.EncryptedData{
+				Ciphertext: []byte(secret.Text),
+				Nonce:      secret.Nonce,
+			}
+			text, err := encryption.Decrypt(encData, encryptionKey)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to decrypt text"})
+			}
+			decryptedText = text
 		}
 
-		decryptedText, err := encryption.Decrypt(encryptedData, encryptionKey)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to decrypt secret",
-			})
+		var fileData string
+		if secret.IsFile {
+			encData := &encryption.EncryptedData{
+				Ciphertext: secret.FileContent,
+				Nonce:      secret.FileNonce,
+			}
+			decBytes, err := encryption.Decrypt(encData, encryptionKey)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to decrypt file"})
+			}
+			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
 		}
 
 		scheduler.RemoveSecret(secret.ID)
@@ -260,16 +290,8 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			}
 		}
 
-		var fileData string
-		var resText string
-		if secret.IsFile {
-			fileData = base64.StdEncoding.EncodeToString([]byte(decryptedText))
-		} else {
-			resText = decryptedText
-		}
-
 		return c.JSON(fiber.Map{
-			"text":     resText,
+			"text":     decryptedText,
 			"isFile":   secret.IsFile,
 			"fileName": secret.FileName,
 			"fileData": fileData,
@@ -329,6 +351,8 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 
 		var isFile bool
 		var fileName string
+		var fileContentBytes []byte
+
 		if fileHeader, err := c.FormFile("file"); err == nil {
 			isFile = true
 			fileName = fileHeader.Filename
@@ -347,7 +371,7 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 					"Error": "Failed to read file",
 				})
 			}
-			text = buf.String()
+			fileContentBytes = buf.Bytes()
 		}
 
 		renderErr := func(msg string) error {
@@ -356,10 +380,10 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			})
 		}
 
-		if text == "" {
-			return renderErr("Content is required")
+		if text == "" && !isFile {
+			return renderErr("Either text or a file is required")
 		}
-		if len(text) > MaxTextLength {
+		if len(text) > MaxTextLength || len(fileContentBytes) > MaxTextLength {
 			return renderErr("Content is too long (max 10MB)")
 		}
 
@@ -381,10 +405,26 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			return renderErr("Password is too long (max 72 characters)")
 		}
 
-		encryptedData, err := encryption.Encrypt(text, encryptionKey)
-		if err != nil {
-			log.Printf("Encryption error: %v", err)
-			return renderErr("Failed to encrypt secret")
+		var encryptedTextNonce []byte
+		var encryptedTextString string
+		if text != "" {
+			encData, err := encryption.Encrypt(text, encryptionKey)
+			if err != nil {
+				return renderErr("Failed to encrypt text")
+			}
+			encryptedTextNonce = encData.Nonce
+			encryptedTextString = string(encData.Ciphertext)
+		}
+
+		var encryptedFileNonce []byte
+		var encryptedFileBytes []byte
+		if isFile {
+			encData, err := encryption.Encrypt(string(fileContentBytes), encryptionKey)
+			if err != nil {
+				return renderErr("Failed to encrypt file")
+			}
+			encryptedFileNonce = encData.Nonce
+			encryptedFileBytes = encData.Ciphertext
 		}
 
 		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -393,10 +433,12 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		}
 
 		newSecret := secret.Secret{
-			Text:         string(encryptedData.Ciphertext),
+			Text:         encryptedTextString,
 			IsFile:       isFile,
 			FileName:     fileName,
-			Nonce:        encryptedData.Nonce,
+			FileContent:  encryptedFileBytes,
+			FileNonce:    encryptedFileNonce,
+			Nonce:        encryptedTextNonce,
 			CreatedAt:    time.Now().UTC(),
 			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
 			PasswordHash: string(passwordHash),
@@ -478,14 +520,30 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			return renderErr(fiber.StatusGone, "This secret has expired and was deleted")
 		}
 
-		encryptedData := &encryption.EncryptedData{
-			Ciphertext: []byte(s.Text),
-			Nonce:      s.Nonce,
+		var decryptedText string
+		if s.Text != "" {
+			encData := &encryption.EncryptedData{
+				Ciphertext: []byte(s.Text),
+				Nonce:      s.Nonce,
+			}
+			txt, err := encryption.Decrypt(encData, encryptionKey)
+			if err != nil {
+				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt text")
+			}
+			decryptedText = txt
 		}
 
-		decryptedText, err := encryption.Decrypt(encryptedData, encryptionKey)
-		if err != nil {
-			return renderErr(fiber.StatusInternalServerError, "Failed to decrypt secret")
+		var fileData string
+		if s.IsFile {
+			encData := &encryption.EncryptedData{
+				Ciphertext: s.FileContent,
+				Nonce:      s.FileNonce,
+			}
+			decBytes, err := encryption.Decrypt(encData, encryptionKey)
+			if err != nil {
+				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt file")
+			}
+			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
 		}
 
 		scheduler.RemoveSecret(s.ID)
@@ -501,16 +559,8 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			}
 		}
 
-		var fileData string
-		var resText string
-		if s.IsFile {
-			fileData = base64.StdEncoding.EncodeToString([]byte(decryptedText))
-		} else {
-			resText = decryptedText
-		}
-
 		return c.Render("view", fiber.Map{
-			"SecretText": resText,
+			"SecretText": decryptedText,
 			"IsFile":     s.IsFile,
 			"FileName":   s.FileName,
 			"FileData":   fileData,

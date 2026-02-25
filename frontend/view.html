@@ -82,23 +82,31 @@
                     throw new Error(data.error || 'Failed to load secret');
                 }
 
+                let contentHtml = '';
+
                 if (data.isFile) {
                     const blob = await (await fetch('data:application/octet-stream;base64,' + data.fileData)).blob();
                     const url = window.URL.createObjectURL(blob);
 
-                    document.getElementById('content').innerHTML = `
-                        <div id="message">
+                    contentHtml += `
+                        <div id="file-message" style="margin-bottom: 1rem;">
                             <p>File is ready for download:</p>
                             <a href="${url}" download="${data.fileName}" style="display:inline-block; padding:10px; background:#007bff; color:white; text-decoration:none; border-radius:4px;">Download ${data.fileName}</a>
                         </div>
-                        <p><small>This file has been deleted from the server.</small></p>
-                    `;
-                } else {
-                    document.getElementById('content').innerHTML = `
-                        <div id="message">${data.text}</div>
-                        <p><small>This message has been deleted from the server.</small></p>
                     `;
                 }
+
+                if (data.text) {
+                    contentHtml += `
+                        <div id="text-message" style="margin-top: 1rem; padding: 1rem; border: 1px solid #eee; background-color: #fafafa; border-radius: 4px; font-family: monospace; white-space: pre-wrap; text-align: left;">
+                            ${data.text}
+                        </div>
+                    `;
+                }
+
+                contentHtml += `<p><small>This secret has been deleted from the server.</small></p>`;
+
+                document.getElementById('content').innerHTML = contentHtml;
             } catch (err) {
                 document.getElementById('content').innerHTML = `<p class="error">${err.message}</p>`;
             }

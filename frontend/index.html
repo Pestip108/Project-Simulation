@@ -62,22 +62,15 @@
 <body>
     <div class="container">
         <h1>Share a Secret</h1>
-        <div style="margin-bottom: 1rem;">
-            <label style="margin-right: 1rem;">
-                <input type="radio" name="secretType" value="text" checked onchange="toggleSecretType()" /> Text Message
-            </label>
-            <label>
-                <input type="radio" name="secretType" value="file" onchange="toggleSecretType()" /> File Upload
-            </label>
+        <label for="secretFile" style="display:block; margin-bottom: 0.5rem; font-weight: bold;">Upload a File and/or
+            Enter Text</label>
+        <div id="fileInputGroup" style="margin-bottom: 1rem;">
+            <input type="file" id="secretFile" style="width: 100%;" />
         </div>
 
         <div id="textInputGroup">
-            <textarea id="secretText" placeholder="Enter your secret message text here..."
+            <textarea id="secretText" placeholder="Or enter your secret message text here..."
                 maxlength="10485760"></textarea>
-        </div>
-
-        <div id="fileInputGroup" style="display: none; margin-bottom: 1rem;">
-            <input type="file" id="secretFile" style="width: 100%;" />
         </div>
 
         <label for="expiration">Expires in:</label>
@@ -99,25 +92,15 @@
 
     <script src="/config.js"></script>
     <script>
-        function toggleSecretType() {
-            const isFile = document.querySelector('input[name="secretType"]:checked').value === 'file';
-            document.getElementById('textInputGroup').style.display = isFile ? 'none' : 'block';
-            document.getElementById('fileInputGroup').style.display = isFile ? 'block' : 'none';
-            if (isFile) document.getElementById('secretText').value = '';
-            else document.getElementById('secretFile').value = '';
-        }
-
         async function shareSecret() {
             const fileInput = document.getElementById('secretFile');
             const expiresInMinutes = parseInt(document.getElementById('expiration').value);
             const password = document.getElementById("password").value;
 
-            const isFile = document.querySelector('input[name="secretType"]:checked').value === 'file';
-            const file = isFile ? fileInput.files[0] : null;
-            const text = !isFile ? document.getElementById('secretText').value : '';
+            const file = fileInput.files[0];
+            const text = document.getElementById('secretText').value;
 
-            if (isFile && !file) return alert('Please upload a file');
-            if (!isFile && !text) return alert('Please enter some text');
+            if (!file && !text) return alert('Please upload a file or enter text');
             if (text && text.length > 10485760) return alert('Secret text is too long (max 10MB)');
             if (file && file.size > 10485760) return alert('File is too large (max 10MB)');
 
@@ -128,7 +111,8 @@
                 const formData = new FormData();
                 if (file) {
                     formData.append('file', file);
-                } else {
+                }
+                if (text) {
                     formData.append('text', text);
                 }
                 formData.append('expiresInMinutes', expiresInMinutes);
