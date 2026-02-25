@@ -1,6 +1,6 @@
 # Share a Secret (Project-Simulation)
 
-A secure, "view-once" message sharing application. Users can share encrypted text messages that are automatically deleted after being viewed once, or after a specified expiration time.
+A secure, "view-once" message and file sharing application. Users can share encrypted text messages or upload files that are automatically deleted after being viewed or downloaded once, or after a specified expiration time.
 
 ## 🚀 Features
 
@@ -9,7 +9,7 @@ A secure, "view-once" message sharing application. Users can share encrypted tex
 - **Self-Destruction**: Expired secrets are automatically cleaned up by a background scheduler (min-heap based).
 - **Password Protection**: Every secret requires a password, hashed with bcrypt before storage.
 - **Security Hardening**:
-    - Max text length: 10KB
+    - Max text/file size: 10MB
     - Password requirements: 6–72 characters
     - Expiration limit: Max 7 days
     - ID Validation: Strict UUID format checking on every request
@@ -138,9 +138,13 @@ http-server ./ -p 3000 -c-1 --cors
 ## 🔌 API Endpoints
 
 ### `POST /api/share`
-Creates a new encrypted secret.
-- **Body**: `{ "text": "string", "expiresInMinutes": int, "password": "string" }`
-- **Constraints**: Text < 10KB, Password 6–72 chars, Expiration ≤ 7 days (10080 min)
+Creates a new encrypted secret via `multipart/form-data`.
+- **Form Fields (Requires either `text` or `file`):** 
+  - `text`: "string"
+  - `file`: binary file
+  - `expiresInMinutes`: int
+  - `password`: "string"
+- **Constraints**: Size < 10MB, Password 6–72 chars, Expiration ≤ 7 days (10080 min)
 
 ### `POST /api/view/:id`
 Retrieves and permanently deletes a secret.
