@@ -18,7 +18,8 @@ type Secret struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 	DeletedAt    time.Time `json:"deleted_at"`
 	PasswordHash string    `json:"-"`
-	Nonce        []byte    `json:"nonce"` // nonce for text part
+	TextNonce    []byte    `json:"textNonce"` // nonce for text part
+	FileNonce    []byte    `json:"FileNonce"` // nonce for file part
 }
 
 // BeforeCreate is a GORM hook to generate a UUID before creating a record

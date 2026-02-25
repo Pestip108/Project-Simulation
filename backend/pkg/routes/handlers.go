@@ -104,6 +104,7 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		}
 
 		var fileKey string
+		var encryptedFileNonce []byte
 		if isFile {
 			encData, err := encryption.Encrypt(fileContentBytes, encryptionKey)
 			if err != nil {
@@ -111,10 +112,8 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			}
 
 			fileKey = uuid.New().String()
-			userMetaData := map[string]string{
-				"Nonce": base64.StdEncoding.EncodeToString(encData.Nonce),
-			}
-			opts := minio.PutObjectOptions{UserMetadata: userMetaData}
+			encryptedFileNonce = encData.Nonce
+			opts := minio.PutObjectOptions{}
 			reader := bytes.NewReader(encData.Ciphertext)
 
 			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, reader, int64(len(encData.Ciphertext)), opts)
@@ -166,7 +165,8 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			Text:         encryptedTextString,
 			FileName:     fileName,
 			FileKey:      fileKey,
-			Nonce:        encryptedTextNonce,
+			TextNonce:    encryptedTextNonce,
+			FileNonce:    encryptedFileNonce,
 			CreatedAt:    time.Now().UTC(),
 			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
 			PasswordHash: string(passwordHash)}
@@ -259,7 +259,7 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 		if secret.Text != "" {
 			encData := &encryption.EncryptedData{
 				Ciphertext: []byte(secret.Text),
-				Nonce:      secret.Nonce,
+				Nonce:      secret.TextNonce,
 			}
 			text, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
@@ -275,13 +275,6 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get file from MinIO"})
 			}
 			defer obj.Close()
-			stat, err := obj.Stat()
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to stat file from MinIO"})
-			}
-
-			nonceBase64 := stat.UserMetadata["Nonce"]
-			nonceBytes, _ := base64.StdEncoding.DecodeString(nonceBase64)
 
 			cipherText, err := io.ReadAll(obj)
 			if err != nil {
@@ -290,7 +283,7 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 
 			encData := &encryption.EncryptedData{
 				Ciphertext: cipherText,
-				Nonce:      nonceBytes,
+				Nonce:      secret.FileNonce,
 			}
 			decBytes, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
@@ -447,16 +440,15 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		}
 
 		var fileKey string
+		var encryptedFileNonce []byte
 		if isFile {
 			encData, err := encryption.Encrypt(fileContentBytes, encryptionKey)
 			if err != nil {
 				return renderErr("Failed to encrypt file")
 			}
 			fileKey = uuid.New().String()
-			userMetaData := map[string]string{
-				"Nonce": base64.StdEncoding.EncodeToString(encData.Nonce),
-			}
-			opts := minio.PutObjectOptions{UserMetadata: userMetaData}
+			encryptedFileNonce = encData.Nonce
+			opts := minio.PutObjectOptions{}
 			reader := bytes.NewReader(encData.Ciphertext)
 
 			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, reader, int64(len(encData.Ciphertext)), opts)
@@ -474,7 +466,8 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			Text:         encryptedTextString,
 			FileName:     fileName,
 			FileKey:      fileKey,
-			Nonce:        encryptedTextNonce,
+			TextNonce:    encryptedTextNonce,
+			FileNonce:    encryptedFileNonce,
 			CreatedAt:    time.Now().UTC(),
 			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
 			PasswordHash: string(passwordHash),
@@ -560,7 +553,7 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 		if s.Text != "" {
 			encData := &encryption.EncryptedData{
 				Ciphertext: []byte(s.Text),
-				Nonce:      s.Nonce,
+				Nonce:      s.TextNonce,
 			}
 			txt, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
@@ -576,13 +569,6 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 				return renderErr(fiber.StatusInternalServerError, "Failed to get file from MinIO")
 			}
 			defer obj.Close()
-			stat, err := obj.Stat()
-			if err != nil {
-				return renderErr(fiber.StatusInternalServerError, "Failed to stat file from MinIO")
-			}
-
-			nonceBase64 := stat.UserMetadata["Nonce"]
-			nonceBytes, _ := base64.StdEncoding.DecodeString(nonceBase64)
 
 			cipherText, err := io.ReadAll(obj)
 			if err != nil {
@@ -591,7 +577,7 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 
 			encData := &encryption.EncryptedData{
 				Ciphertext: cipherText,
-				Nonce:      nonceBytes,
+				Nonce:      s.FileNonce,
 			}
 			decBytes, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
