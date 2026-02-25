@@ -12,6 +12,8 @@ type Secret struct {
 	ID           int64     `gorm:"primaryKey" json:"id"`
 	UUID         string    `json:"uuid"`
 	Text         string    `json:"text"`
+	IsFile       bool      `json:"isFile"`
+	FileName     string    `json:"fileName"`
 	CreatedAt    time.Time `json:"created_at"`
 	ExpiresAt    time.Time `json:"expires_at"`
 	DeletedAt    time.Time `json:"deleted_at"`

@@ -1,7 +1,10 @@
 package routes
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"runtime"
@@ -17,7 +20,7 @@ import (
 )
 
 const (
-	MaxTextLength        = 10000 // 10KB limit
+	MaxTextLength        = 10 * 1024 * 1024 // 10MB limit
 	MaxExpirationMinutes = 10080 // 7 days limit
 	MinPasswordLength    = 6
 	MaxPasswordLength    = 72 // Standard bcrypt limit
@@ -26,32 +29,66 @@ const (
 // createSecretHandler handles the creation of new secrets
 func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		var input struct {
-			Text             string `json:"text"`
-			ExpiresInMinutes int    `json:"expiresInMinutes"`
-			Password         string `json:"password"`
+		var text string
+		var expiresInMinutes int
+		var password string
+		var isFile bool
+		var fileName string
+
+		if file, err := c.FormFile("file"); err == nil {
+			isFile = true
+			fileName = file.Filename
+			
+			fileContent, err := file.Open()
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "Failed to process file",
+				})
+			}
+			defer fileContent.Close()
+			
+			buf := new(bytes.Buffer)
+			if _, err := io.Copy(buf, fileContent); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "Failed to read file",
+				})
+			}
+			text = buf.String()
+
+			expiresInMinutesStr := c.FormValue("expiresInMinutes")
+			fmt.Sscanf(expiresInMinutesStr, "%d", &expiresInMinutes)
+			password = c.FormValue("password")
+		} else {
+			var input struct {
+				Text             string `json:"text"`
+				ExpiresInMinutes int    `json:"expiresInMinutes"`
+				Password         string `json:"password"`
+			}
+
+			if err := c.BodyParser(&input); err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Cannot parse request body",
+				})
+			}
+			text = input.Text
+			expiresInMinutes = input.ExpiresInMinutes
+			password = input.Password
 		}
 
-		if err := c.BodyParser(&input); err != nil {
+		if text == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Cannot parse JSON",
+				"error": "Content is required",
 			})
 		}
 
-		if input.Text == "" {
+		if len(text) > MaxTextLength {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Text is required",
-			})
-		}
-
-		if len(input.Text) > MaxTextLength {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Text is too long (max 10KB)",
+				"error": "Content is too long (max 10MB)",
 			})
 		}
 
 		// Encrypt the text before saving
-		encryptedData, err := encryption.Encrypt(input.Text, encryptionKey)
+		encryptedData, err := encryption.Encrypt(text, encryptionKey)
 		if err != nil {
 			log.Printf("Encryption error: %v", err)
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -59,39 +96,39 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			})
 		}
 
-		if input.ExpiresInMinutes <= 0 {
+		if expiresInMinutes <= 0 {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Expiration time must be greater than 0 minutes",
 			})
 		}
 
-		if input.ExpiresInMinutes > MaxExpirationMinutes {
+		if expiresInMinutes > MaxExpirationMinutes {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Expiration time cannot exceed 7 days",
 			})
 		}
 
 		// Validate password
-		if input.Password == "" {
+		if password == "" {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Password is required",
 			})
 		}
 
-		if len(input.Password) < MinPasswordLength {
+		if len(password) < MinPasswordLength {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Password must be at least 6 characters long",
 			})
 		}
 
-		if len(input.Password) > MaxPasswordLength {
+		if len(password) > MaxPasswordLength {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Password is too long (max 72 characters)",
 			})
 		}
 
 		// Hash the password
-		passwordHash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to hash password",
@@ -100,9 +137,11 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 
 		secret := secret.Secret{
 			Text:         string(encryptedData.Ciphertext),
+			IsFile:       isFile,
+			FileName:     fileName,
 			Nonce:        encryptedData.Nonce,
 			CreatedAt:    time.Now().UTC(),
-			ExpiresAt:    time.Now().UTC().Add(time.Duration(input.ExpiresInMinutes) * time.Minute),
+			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
 			PasswordHash: string(passwordHash)}
 
 		if result := db.Create(&secret); result.Error != nil {
@@ -221,8 +260,19 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			}
 		}
 
+		var fileData string
+		var resText string
+		if secret.IsFile {
+			fileData = base64.StdEncoding.EncodeToString([]byte(decryptedText))
+		} else {
+			resText = decryptedText
+		}
+
 		return c.JSON(fiber.Map{
-			"text": decryptedText,
+			"text":     resText,
+			"isFile":   secret.IsFile,
+			"fileName": secret.FileName,
+			"fileData": fileData,
 		})
 	}
 }
@@ -277,6 +327,29 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		password := c.FormValue("password")
 		expiresInMinutesStr := c.FormValue("expiresInMinutes")
 
+		var isFile bool
+		var fileName string
+		if fileHeader, err := c.FormFile("file"); err == nil {
+			isFile = true
+			fileName = fileHeader.Filename
+			
+			file, err := fileHeader.Open()
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
+					"Error": "Failed to process file",
+				})
+			}
+			defer file.Close()
+			
+			buf := new(bytes.Buffer)
+			if _, err := io.Copy(buf, file); err != nil {
+				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
+					"Error": "Failed to read file",
+				})
+			}
+			text = buf.String()
+		}
+
 		renderErr := func(msg string) error {
 			return c.Status(fiber.StatusBadRequest).Render("index", fiber.Map{
 				"Error": msg,
@@ -284,10 +357,10 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		}
 
 		if text == "" {
-			return renderErr("Text is required")
+			return renderErr("Content is required")
 		}
 		if len(text) > MaxTextLength {
-			return renderErr("Text is too long (max 10KB)")
+			return renderErr("Content is too long (max 10MB)")
 		}
 
 		expiresInMinutes := 0
@@ -321,6 +394,8 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 
 		newSecret := secret.Secret{
 			Text:         string(encryptedData.Ciphertext),
+			IsFile:       isFile,
+			FileName:     fileName,
 			Nonce:        encryptedData.Nonce,
 			CreatedAt:    time.Now().UTC(),
 			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
@@ -426,8 +501,19 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			}
 		}
 
+		var fileData string
+		var resText string
+		if s.IsFile {
+			fileData = base64.StdEncoding.EncodeToString([]byte(decryptedText))
+		} else {
+			resText = decryptedText
+		}
+
 		return c.Render("view", fiber.Map{
-			"SecretText": decryptedText,
+			"SecretText": resText,
+			"IsFile":     s.IsFile,
+			"FileName":   s.FileName,
+			"FileData":   fileData,
 		})
 	}
 }

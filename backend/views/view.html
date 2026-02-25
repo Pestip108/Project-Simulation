@@ -12,7 +12,15 @@
     <div class="container">
         <h1>Secret Message</h1>
 
-        {{if .SecretText}}
+        {{if .IsFile}}
+        <div id="message">
+            <p>File is ready for download:</p>
+            <a href="data:application/octet-stream;base64,{{.FileData}}" download="{{.FileName}}"
+                style="display:inline-block; padding:10px; background:#007bff; color:white; text-decoration:none; border-radius:4px;">Download
+                {{.FileName}}</a>
+        </div>
+        <p><small>This file has been deleted from the server.</small></p>
+        {{else if .SecretText}}
         <div id="message">{{.SecretText}}</div>
         <p><small>This message has been deleted from the server.</small></p>
         {{else}}
