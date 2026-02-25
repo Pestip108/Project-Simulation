@@ -11,6 +11,7 @@ import (
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -62,8 +63,13 @@ func main() {
 		log.Fatal("Failed to auto migrate:", err)
 	}
 
-	// Initialize Scheduler
+	// Start the cleanup scheduler
 	scheduler := heap.NewSecretScheduler(db)
+
+	log.Println("Initializing MinIO connection...")
+	storage.InitMinIO()
+
+	// Parse custom CORS origins from .env
 	if err := scheduler.LoadPendingSecrets(); err != nil {
 		log.Fatal(err)
 	}
