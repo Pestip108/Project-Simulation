@@ -28,8 +28,25 @@
         {{end}}
 
         {{if not .Link}}
-        <form method="POST" action="/share">
-            <textarea name="text" placeholder="Enter your secret message here..." required maxlength="10000"></textarea>
+        <form method="POST" action="/share" enctype="multipart/form-data">
+            <div style="margin-bottom: 1rem;">
+                <label style="margin-right: 1rem;">
+                    <input type="radio" name="secretType" value="text" checked onchange="toggleSecretType()" /> Text
+                    Message
+                </label>
+                <label>
+                    <input type="radio" name="secretType" value="file" onchange="toggleSecretType()" /> File Upload
+                </label>
+            </div>
+
+            <div id="textInputGroup">
+                <textarea id="secretText" name="text" placeholder="Enter your secret message text here..."
+                    maxlength="10485760"></textarea>
+            </div>
+
+            <div id="fileInputGroup" style="display: none; margin-bottom: 1rem;">
+                <input type="file" name="file" id="secretFile" style="width: 100%;" />
+            </div>
 
             <label for="expiration">Expires in:</label>
             <select name="expiresInMinutes" id="expiration"
@@ -47,6 +64,16 @@
         </form>
         {{end}}
     </div>
+
+    <script>
+        function toggleSecretType() {
+            var isFile = document.querySelector('input[name="secretType"]:checked').value === 'file';
+            document.getElementById('textInputGroup').style.display = isFile ? 'none' : 'block';
+            document.getElementById('fileInputGroup').style.display = isFile ? 'block' : 'none';
+            if (isFile) document.getElementById('secretText').value = '';
+            else document.getElementById('secretFile').value = '';
+        }
+    </script>
 </body>
 
 </html>
