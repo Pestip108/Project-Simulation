@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -23,8 +22,9 @@ import (
 )
 
 const (
-	MaxTextLength        = 10 * 1024 * 1024 // 10MB limit
-	MaxExpirationMinutes = 10080            // 7 days limit
+	MaxTextLength        = 10 * 1024 * 1024  // 10MB limit
+	MaxFileLength        = 200 * 1024 * 1024 // 200MB limit
+	MaxExpirationMinutes = 10080             // 7 days limit
 	MinPasswordLength    = 6
 	MaxPasswordLength    = 72 // Standard bcrypt limit
 )
@@ -51,13 +51,13 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			}
 			defer fileContent.Close()
 
-			buf := new(bytes.Buffer)
-			if _, err := io.Copy(buf, fileContent); err != nil {
+			var readErr error
+			fileContentBytes, readErr = io.ReadAll(fileContent)
+			if readErr != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 					"error": "Failed to read file",
 				})
 			}
-			fileContentBytes = buf.Bytes()
 		}
 
 		// Pull from multipart form if present
@@ -86,9 +86,9 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			})
 		}
 
-		if len(text) > MaxTextLength || len(fileContentBytes) > MaxTextLength {
+		if len(text) > MaxTextLength || len(fileContentBytes) > MaxFileLength {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Content is too long (max 10MB)",
+				"error": "Content is too long (max 10MB for text and 200MB for files)",
 			})
 		}
 
@@ -113,10 +113,15 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 
 			fileKey = uuid.New().String()
 			encryptedFileNonce = encData.Nonce
-			opts := minio.PutObjectOptions{}
-			reader := bytes.NewReader(encData.Ciphertext)
 
-			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, reader, int64(len(encData.Ciphertext)), opts)
+			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
+			// in-memory copy of the encrypted bytes.
+			pr, pw := io.Pipe()
+			go func() {
+				_, writeErr := pw.Write(encData.Ciphertext)
+				pw.CloseWithError(writeErr)
+			}()
+			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, int64(len(encData.Ciphertext)), minio.PutObjectOptions{})
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to upload file to MinIO"})
 			}
@@ -388,13 +393,13 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			}
 			defer file.Close()
 
-			buf := new(bytes.Buffer)
-			if _, err := io.Copy(buf, file); err != nil {
+			var readErr error
+			fileContentBytes, readErr = io.ReadAll(file)
+			if readErr != nil {
 				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
 					"Error": "Failed to read file",
 				})
 			}
-			fileContentBytes = buf.Bytes()
 		}
 
 		renderErr := func(msg string) error {
@@ -406,8 +411,8 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		if text == "" && !isFile {
 			return renderErr("Either text or a file is required")
 		}
-		if len(text) > MaxTextLength || len(fileContentBytes) > MaxTextLength {
-			return renderErr("Content is too long (max 10MB)")
+		if len(text) > MaxTextLength || len(fileContentBytes) > MaxFileLength {
+			return renderErr("Content is too long (max 10MB for text and 200MB for files)")
 		}
 
 		expiresInMinutes := 0
@@ -448,10 +453,15 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			}
 			fileKey = uuid.New().String()
 			encryptedFileNonce = encData.Nonce
-			opts := minio.PutObjectOptions{}
-			reader := bytes.NewReader(encData.Ciphertext)
 
-			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, reader, int64(len(encData.Ciphertext)), opts)
+			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
+			// in-memory copy of the encrypted bytes.
+			pr, pw := io.Pipe()
+			go func() {
+				_, writeErr := pw.Write(encData.Ciphertext)
+				pw.CloseWithError(writeErr)
+			}()
+			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, int64(len(encData.Ciphertext)), minio.PutObjectOptions{})
 			if err != nil {
 				return renderErr("Failed to upload file to MinIO")
 			}

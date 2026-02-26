@@ -83,8 +83,10 @@ func main() {
 
 	// Initialize Fiber app with template engine
 	app := fiber.New(fiber.Config{
-		Views:     html.NewFileSystem(http.FS(viewsSubFS), ".html"),
-		BodyLimit: 10 * 1024 * 1024, // 10MB limit
+		Views:        html.NewFileSystem(http.FS(viewsSubFS), ".html"),
+		BodyLimit:    200 * 1024 * 1024, // 200MB hard limit (upload route needs this); non-upload routes enforce a smaller soft limit via middleware
+		ReadTimeout:  1 * time.Minute,
+		WriteTimeout: 1 * time.Minute,
 	})
 
 	// Configure CORS for the JSON API routes
