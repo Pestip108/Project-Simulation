@@ -84,9 +84,25 @@ func main() {
 	// Initialize Fiber app with template engine
 	app := fiber.New(fiber.Config{
 		Views:        html.NewFileSystem(http.FS(viewsSubFS), ".html"),
-		BodyLimit:    200 * 1024 * 1024, // 200MB hard limit (upload route needs this); non-upload routes enforce a smaller soft limit via middleware
+		BodyLimit:    600 * 1024 * 1024, // 600MB hard limit (upload route needs this); non-upload routes enforce a smaller soft limit via middleware
 		ReadTimeout:  1 * time.Minute,
 		WriteTimeout: 1 * time.Minute,
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			// Catch 413 Payload Too Large error specifically
+			if e, ok := err.(*fiber.Error); ok && e.Code == fiber.StatusRequestEntityTooLarge {
+				if c.Path() == "/share" {
+					return c.Status(fiber.StatusRequestEntityTooLarge).Render("index", fiber.Map{
+						"Error": "Content is too long (max 10MB for text and 200MB for files)",
+					})
+				}
+				return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{
+					"error": "Content is too long (max 10MB for text and 200MB for files)",
+				})
+			}
+
+			// Default behavior for other errors
+			return fiber.DefaultErrorHandler(c, err)
+		},
 	})
 
 	// Configure CORS for the JSON API routes

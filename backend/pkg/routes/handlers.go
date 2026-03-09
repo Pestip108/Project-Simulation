@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
+	filevalidation "github.com/Pestip108/Project-Simulation/backend/pkg/file_validation"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
@@ -37,11 +39,18 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		var password string
 		var isFile bool
 		var fileName string
-		var fileContentBytes []byte
+		var fileStream io.Reader
 
 		if file, err := c.FormFile("file"); err == nil {
 			isFile = true
 			fileName = file.Filename
+			
+			// Validate file size immediately using header
+			if file.Size > MaxFileLength {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Content is too long (max 10MB for text and 200MB for files)",
+				})
+			}
 
 			fileContent, err := file.Open()
 			if err != nil {
@@ -51,13 +60,24 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			}
 			defer fileContent.Close()
 
-			var readErr error
-			fileContentBytes, readErr = io.ReadAll(fileContent)
-			if readErr != nil {
+			// Read first 512 bytes for type validation
+			headerBuffer := make([]byte, 512)
+			n, readErr := io.ReadFull(fileContent, headerBuffer)
+			if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "Failed to read file",
+					"error": "Failed to read file header",
 				})
 			}
+			// Only validate the bytes we actually read
+			headerBuffer = headerBuffer[:n]
+
+			// Validate file type
+			if err := filevalidation.ValidateFileType(headerBuffer); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "File type not accepted"})
+			}
+			
+			// Reconstruct stream: the 512 bytes we read + the remainder of the file
+			fileStream = io.MultiReader(bytes.NewReader(headerBuffer), fileContent)
 		}
 
 		// Pull from multipart form if present
@@ -86,7 +106,9 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			})
 		}
 
-		if len(text) > MaxTextLength || len(fileContentBytes) > MaxFileLength {
+		// Text size validation
+		// Size for files is now validated immediately upon receiving the header
+		if len(text) > MaxTextLength {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 				"error": "Content is too long (max 10MB for text and 200MB for files)",
 			})
@@ -106,24 +128,33 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		var fileKey string
 		var encryptedFileNonce []byte
 		if isFile {
-			encData, err := encryption.Encrypt(fileContentBytes, encryptionKey)
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt file"})
-			}
-
 			fileKey = uuid.New().String()
-			encryptedFileNonce = encData.Nonce
 
 			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
 			// in-memory copy of the encrypted bytes.
 			pr, pw := io.Pipe()
+			
+			// We use a channel to communicate errors back from the encryptor goroutine
+			errChan := make(chan error, 1)
+			
 			go func() {
-				_, writeErr := pw.Write(encData.Ciphertext)
-				pw.CloseWithError(writeErr)
+				// EncryptStream will read from fileStream, encrypt, and write to pw
+				iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
+				if encryptErr == nil {
+					encryptedFileNonce = iv
+				}
+				errChan <- encryptErr
+				pw.CloseWithError(encryptErr)
 			}()
-			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, int64(len(encData.Ciphertext)), minio.PutObjectOptions{})
+			
+			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to upload file to MinIO"})
+			}
+			
+			// Check if there was an encryption error
+			if encryptErr := <-errChan; encryptErr != nil {
+			    return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt file stream"})
 			}
 		}
 
@@ -281,19 +312,21 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			}
 			defer obj.Close()
 
-			cipherText, err := io.ReadAll(obj)
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to read file from MinIO"})
-			}
-
-			encData := &encryption.EncryptedData{
-				Ciphertext: cipherText,
-				Nonce:      secret.FileNonce,
-			}
-			decBytes, err := encryption.Decrypt(encData, encryptionKey)
+			// Stream the decrypted file directly to a buffer
+			// For base64 we need the file into memory anyway to encode it
+			// IF files get larger, base64 encoding will become an issue and we'll need a different delivery mechanism
+			var decBuf bytes.Buffer
+			err = encryption.DecryptStream(obj, &decBuf, encryptionKey, secret.FileNonce)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to decrypt file"})
 			}
+			decBytes := decBuf.Bytes()
+
+			// Validate file type
+			if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "File type not accepted"})
+			}
+
 			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
 		}
 
@@ -374,16 +407,27 @@ func indexPageHandler() fiber.Handler {
 func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		text := c.FormValue("text")
-		password := c.FormValue("password")
-		expiresInMinutesStr := c.FormValue("expiresInMinutes")
+		var password string
+		var expiresInMinutesStr string
 
 		var isFile bool
 		var fileName string
-		var fileContentBytes []byte
+		var fileStream io.Reader
+
+		renderErr := func(msg string) error {
+			return c.Status(fiber.StatusBadRequest).Render("index", fiber.Map{
+				"Error": msg,
+			})
+		}
 
 		if fileHeader, err := c.FormFile("file"); err == nil {
 			isFile = true
 			fileName = fileHeader.Filename
+
+			// Validate file size immediately using header
+			if fileHeader.Size > MaxFileLength {
+				return renderErr("Content is too long (max 10MB for text and 200MB for files)")
+			}
 
 			file, err := fileHeader.Open()
 			if err != nil {
@@ -393,25 +437,32 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			}
 			defer file.Close()
 
-			var readErr error
-			fileContentBytes, readErr = io.ReadAll(file)
-			if readErr != nil {
+			// Read first 512 bytes for type validation
+			headerBuffer := make([]byte, 512)
+			n, readErr := io.ReadFull(file, headerBuffer)
+			if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
 				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
-					"Error": "Failed to read file",
+					"Error": "Failed to read file header",
 				})
 			}
-		}
+			// Only validate the bytes we actually read
+			headerBuffer = headerBuffer[:n]
 
-		renderErr := func(msg string) error {
-			return c.Status(fiber.StatusBadRequest).Render("index", fiber.Map{
-				"Error": msg,
-			})
+			// Validate file type
+			if err := filevalidation.ValidateFileType(headerBuffer); err != nil {
+				return renderErr("File type not accepted")
+			}
+			
+			// Reconstruct stream: the 512 bytes we read + the remainder of the file
+			fileStream = io.MultiReader(bytes.NewReader(headerBuffer), file)
 		}
 
 		if text == "" && !isFile {
 			return renderErr("Either text or a file is required")
 		}
-		if len(text) > MaxTextLength || len(fileContentBytes) > MaxFileLength {
+		// Text size validation
+		// Size for files is now validated immediately upon receiving the header
+		if len(text) > MaxTextLength {
 			return renderErr("Content is too long (max 10MB for text and 200MB for files)")
 		}
 
@@ -447,23 +498,33 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		var fileKey string
 		var encryptedFileNonce []byte
 		if isFile {
-			encData, err := encryption.Encrypt(fileContentBytes, encryptionKey)
-			if err != nil {
-				return renderErr("Failed to encrypt file")
-			}
 			fileKey = uuid.New().String()
-			encryptedFileNonce = encData.Nonce
-
+			
 			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
 			// in-memory copy of the encrypted bytes.
 			pr, pw := io.Pipe()
+			
+			// We use a channel to communicate errors back from the encryptor goroutine
+			errChan := make(chan error, 1)
+			
 			go func() {
-				_, writeErr := pw.Write(encData.Ciphertext)
-				pw.CloseWithError(writeErr)
+				// EncryptStream will read from fileStream, encrypt, and write to pw
+				iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
+				if encryptErr == nil {
+					encryptedFileNonce = iv
+				}
+				errChan <- encryptErr
+				pw.CloseWithError(encryptErr)
 			}()
-			_, err = storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, int64(len(encData.Ciphertext)), minio.PutObjectOptions{})
+			
+			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
 			if err != nil {
 				return renderErr("Failed to upload file to MinIO")
+			}
+			
+			// Check if there was an encryption error
+			if encryptErr := <-errChan; encryptErr != nil {
+			    return renderErr("Failed to encrypt file stream")
 			}
 		}
 
@@ -580,19 +641,20 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			}
 			defer obj.Close()
 
-			cipherText, err := io.ReadAll(obj)
-			if err != nil {
-				return renderErr(fiber.StatusInternalServerError, "Failed to read file from MinIO")
-			}
-
-			encData := &encryption.EncryptedData{
-				Ciphertext: cipherText,
-				Nonce:      s.FileNonce,
-			}
-			decBytes, err := encryption.Decrypt(encData, encryptionKey)
+			// Similarly, view page needs to evaluate file size memory tradeoffs for base64 encoding
+			var decBuf bytes.Buffer
+			err = encryption.DecryptStream(obj, &decBuf, encryptionKey, s.FileNonce)
 			if err != nil {
 				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt file")
 			}
+			
+			decBytes := decBuf.Bytes()
+
+			// Validate file type
+			if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
+				return renderErr(fiber.StatusBadRequest, "File type not accepted")
+			}
+
 			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
 		}
 
