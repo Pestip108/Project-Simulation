@@ -44,7 +44,7 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		if file, err := c.FormFile("file"); err == nil {
 			isFile = true
 			fileName = file.Filename
-			
+
 			// Validate file size immediately using header
 			if file.Size > MaxFileLength {
 				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -73,9 +73,9 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 
 			// Validate file type
 			if err := filevalidation.ValidateFileType(headerBuffer); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "File type not accepted"})
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 			}
-			
+
 			// Reconstruct stream: the 512 bytes we read + the remainder of the file
 			fileStream = io.MultiReader(bytes.NewReader(headerBuffer), fileContent)
 		}
@@ -133,10 +133,10 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
 			// in-memory copy of the encrypted bytes.
 			pr, pw := io.Pipe()
-			
+
 			// We use a channel to communicate errors back from the encryptor goroutine
 			errChan := make(chan error, 1)
-			
+
 			go func() {
 				// EncryptStream will read from fileStream, encrypt, and write to pw
 				iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
@@ -146,15 +146,15 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 				errChan <- encryptErr
 				pw.CloseWithError(encryptErr)
 			}()
-			
+
 			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to upload file to MinIO"})
 			}
-			
+
 			// Check if there was an encryption error
 			if encryptErr := <-errChan; encryptErr != nil {
-			    return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt file stream"})
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt file stream"})
 			}
 		}
 
@@ -324,7 +324,7 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 
 			// Validate file type
 			if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "File type not accepted"})
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 			}
 
 			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
@@ -450,9 +450,9 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 
 			// Validate file type
 			if err := filevalidation.ValidateFileType(headerBuffer); err != nil {
-				return renderErr("File type not accepted")
+				return renderErr(err.Error())
 			}
-			
+
 			// Reconstruct stream: the 512 bytes we read + the remainder of the file
 			fileStream = io.MultiReader(bytes.NewReader(headerBuffer), file)
 		}
@@ -499,14 +499,14 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		var encryptedFileNonce []byte
 		if isFile {
 			fileKey = uuid.New().String()
-			
+
 			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
 			// in-memory copy of the encrypted bytes.
 			pr, pw := io.Pipe()
-			
+
 			// We use a channel to communicate errors back from the encryptor goroutine
 			errChan := make(chan error, 1)
-			
+
 			go func() {
 				// EncryptStream will read from fileStream, encrypt, and write to pw
 				iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
@@ -516,15 +516,15 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 				errChan <- encryptErr
 				pw.CloseWithError(encryptErr)
 			}()
-			
+
 			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
 			if err != nil {
 				return renderErr("Failed to upload file to MinIO")
 			}
-			
+
 			// Check if there was an encryption error
 			if encryptErr := <-errChan; encryptErr != nil {
-			    return renderErr("Failed to encrypt file stream")
+				return renderErr("Failed to encrypt file stream")
 			}
 		}
 
@@ -647,12 +647,12 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			if err != nil {
 				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt file")
 			}
-			
+
 			decBytes := decBuf.Bytes()
 
 			// Validate file type
 			if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
-				return renderErr(fiber.StatusBadRequest, "File type not accepted")
+				return renderErr(fiber.StatusBadRequest, err.Error())
 			}
 
 			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
