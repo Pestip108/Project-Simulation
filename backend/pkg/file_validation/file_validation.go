@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
+	// "github.com/unidoc/unioffice/document"
 )
 
 var AllowedTypes = map[string]bool{
@@ -80,3 +81,21 @@ func ValidatePDF(data []byte) error {
 
 	return nil
 }
+
+// func HasMacrosDocx(fileBytes []byte) error {
+// 	// Wrap bytes in a Reader
+// 	reader := bytes.NewReader(fileBytes)
+
+// 	// Open DOCX document from Reader
+// 	doc, err := document.OpenReader(reader)
+// 	if err != nil {
+// 		return errors.New("Failed to validate document")
+// 	}
+
+// 	// UniOffice exposes Macros() for macro inspection
+// 	if len(doc.Macros()) > 0 {
+// 		return errors.New("File contains macros")
+// 	}
+
+// 	return nil
+// }
