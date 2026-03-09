@@ -6,11 +6,12 @@ import (
 )
 
 var AllowedTypes = map[string]bool{
-	"text/plain": true,
-	"image/jpeg": true,
-	"image/png":  true,
-	"image/gif":  true,
-	"image/webp": true,
+	"text/plain":      true,
+	"image/jpeg":      true,
+	"image/png":       true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"application/zip": true,
 }
 
 func ValidateFileType(fileBytes []byte) error {
