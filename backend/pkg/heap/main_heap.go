@@ -2,12 +2,15 @@ package heap
 
 import (
 	"container/heap"
+	"context"
 	"log"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
+	"github.com/minio/minio-go/v7"
 	"gorm.io/gorm"
 )
 
@@ -126,19 +129,29 @@ func (s *SecretScheduler) run() {
 				log.Fatal("APPDEBUG not set")
 			}
 
-			if appDebug == "0" {
-				if err := s.db.Delete(secret.Secret{}, "id = ?", expired.ID).Error; err != nil {
-					log.Printf("Failed to delete secret %d: %v", expired.ID, err)
+			var sec secret.Secret
+			err := s.db.Unscoped().First(&sec, expired.ID).Error
+
+			if err == nil {
+				if appDebug == "0" {
+					if err := s.db.Unscoped().Delete(&sec).Error; err != nil {
+						log.Printf("Failed to delete secret %d: %v", expired.ID, err)
+					} else {
+						log.Printf("Deleted expired secret %d", expired.ID)
+						if sec.FileKey != "" {
+							_ = storage.Client.RemoveObject(context.Background(), storage.BucketName, sec.FileKey, minio.RemoveObjectOptions{})
+						}
+					}
 				} else {
-					log.Printf("Deleted expired secret %d", expired.ID)
+					if result := s.db.Model(&sec).
+						Update("deleted_at", time.Now().UTC()); result.Error != nil {
+						log.Printf("Failed to mark secret deleted %d: %v", expired.ID, result.Error)
+					} else {
+						log.Printf("Soft-Deleted expired secret %d", expired.ID)
+					}
 				}
-			} else {
-				if result := s.db.Model(&secret.Secret{}).Where("id = ?", expired.ID).
-					Update("deleted_at", time.Now().UTC()); result.Error != nil {
-					log.Printf("Failed to mark secret deleted %d: %v", expired.ID, result.Error)
-				} else {
-					log.Printf("Soft-Deleted expired secret %d", expired.ID)
-				}
+			} else if err != gorm.ErrRecordNotFound {
+				log.Printf("Failed to fetch secret %d: %v", expired.ID, err)
 			}
 		}
 
@@ -159,7 +172,15 @@ func (s *SecretScheduler) LoadPendingSecrets() error {
 	}
 
 	if appDebug == "0" {
-		if err := s.db.
+		var expiredRecords []secret.Secret
+		s.db.Where("expires_at <= ?", now).Find(&expiredRecords)
+		for _, sec := range expiredRecords {
+			if sec.FileKey != "" {
+				_ = storage.Client.RemoveObject(context.Background(), storage.BucketName, sec.FileKey, minio.RemoveObjectOptions{})
+			}
+		}
+
+		if err := s.db.Unscoped().
 			Where("expires_at <= ?", now).
 			Delete(&secret.Secret{}).Error; err != nil {
 			return err

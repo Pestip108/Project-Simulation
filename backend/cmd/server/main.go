@@ -11,6 +11,7 @@ import (
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -62,8 +63,13 @@ func main() {
 		log.Fatal("Failed to auto migrate:", err)
 	}
 
-	// Initialize Scheduler
+	// Start the cleanup scheduler
 	scheduler := heap.NewSecretScheduler(db)
+
+	log.Println("Initializing MinIO connection...")
+	storage.InitMinIO()
+
+	// Parse custom CORS origins from .env
 	if err := scheduler.LoadPendingSecrets(); err != nil {
 		log.Fatal(err)
 	}
@@ -77,8 +83,26 @@ func main() {
 
 	// Initialize Fiber app with template engine
 	app := fiber.New(fiber.Config{
-		Views:     html.NewFileSystem(http.FS(viewsSubFS), ".html"),
-		BodyLimit: 10 * 1024 * 1024, // 10MB limit
+		Views:        html.NewFileSystem(http.FS(viewsSubFS), ".html"),
+		BodyLimit:    600 * 1024 * 1024, // 600MB hard limit (upload route needs this); non-upload routes enforce a smaller soft limit via middleware
+		ReadTimeout:  1 * time.Minute,
+		WriteTimeout: 1 * time.Minute,
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			// Catch 413 Payload Too Large error specifically
+			if e, ok := err.(*fiber.Error); ok && e.Code == fiber.StatusRequestEntityTooLarge {
+				if c.Path() == "/share" {
+					return c.Status(fiber.StatusRequestEntityTooLarge).Render("index", fiber.Map{
+						"Error": "Content is too long (max 10MB for text and 200MB for files)",
+					})
+				}
+				return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{
+					"error": "Content is too long (max 10MB for text and 200MB for files)",
+				})
+			}
+
+			// Default behavior for other errors
+			return fiber.DefaultErrorHandler(c, err)
+		},
 	})
 
 	// Configure CORS for the JSON API routes

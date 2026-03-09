@@ -2,6 +2,7 @@ package routes
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -11,17 +12,21 @@ import (
 	"time"
 
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
+	filevalidation "github.com/Pestip108/Project-Simulation/backend/pkg/file_validation"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
 const (
-	MaxTextLength        = 10 * 1024 * 1024 // 10MB limit
-	MaxExpirationMinutes = 10080 // 7 days limit
+	MaxTextLength        = 10 * 1024 * 1024  // 10MB limit
+	MaxFileLength        = 200 * 1024 * 1024 // 200MB limit
+	MaxExpirationMinutes = 10080             // 7 days limit
 	MinPasswordLength    = 6
 	MaxPasswordLength    = 72 // Standard bcrypt limit
 )
@@ -34,12 +39,19 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		var password string
 		var isFile bool
 		var fileName string
-		var fileContentBytes []byte
+		var fileStream io.Reader
 
 		if file, err := c.FormFile("file"); err == nil {
 			isFile = true
 			fileName = file.Filename
 			
+			// Validate file size immediately using header
+			if file.Size > MaxFileLength {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Content is too long (max 10MB for text and 200MB for files)",
+				})
+			}
+
 			fileContent, err := file.Open()
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -47,14 +59,25 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 				})
 			}
 			defer fileContent.Close()
-			
-			buf := new(bytes.Buffer)
-			if _, err := io.Copy(buf, fileContent); err != nil {
+
+			// Read first 512 bytes for type validation
+			headerBuffer := make([]byte, 512)
+			n, readErr := io.ReadFull(fileContent, headerBuffer)
+			if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-					"error": "Failed to read file",
+					"error": "Failed to read file header",
 				})
 			}
-			fileContentBytes = buf.Bytes()
+			// Only validate the bytes we actually read
+			headerBuffer = headerBuffer[:n]
+
+			// Validate file type
+			if err := filevalidation.ValidateFileType(headerBuffer); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "File type not accepted"})
+			}
+			
+			// Reconstruct stream: the 512 bytes we read + the remainder of the file
+			fileStream = io.MultiReader(bytes.NewReader(headerBuffer), fileContent)
 		}
 
 		// Pull from multipart form if present
@@ -83,16 +106,18 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			})
 		}
 
-		if len(text) > MaxTextLength || len(fileContentBytes) > MaxTextLength {
+		// Text size validation
+		// Size for files is now validated immediately upon receiving the header
+		if len(text) > MaxTextLength {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Content is too long (max 10MB)",
+				"error": "Content is too long (max 10MB for text and 200MB for files)",
 			})
 		}
 
 		var encryptedTextNonce []byte
 		var encryptedTextString string
 		if text != "" {
-			encData, err := encryption.Encrypt(text, encryptionKey)
+			encData, err := encryption.Encrypt([]byte(text), encryptionKey)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt text"})
 			}
@@ -100,15 +125,37 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			encryptedTextString = string(encData.Ciphertext)
 		}
 
+		var fileKey string
 		var encryptedFileNonce []byte
-		var encryptedFileBytes []byte
 		if isFile {
-			encData, err := encryption.Encrypt(string(fileContentBytes), encryptionKey)
+			fileKey = uuid.New().String()
+
+			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
+			// in-memory copy of the encrypted bytes.
+			pr, pw := io.Pipe()
+			
+			// We use a channel to communicate errors back from the encryptor goroutine
+			errChan := make(chan error, 1)
+			
+			go func() {
+				// EncryptStream will read from fileStream, encrypt, and write to pw
+				iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
+				if encryptErr == nil {
+					encryptedFileNonce = iv
+				}
+				errChan <- encryptErr
+				pw.CloseWithError(encryptErr)
+			}()
+			
+			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
 			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt file"})
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to upload file to MinIO"})
 			}
-			encryptedFileNonce = encData.Nonce
-			encryptedFileBytes = encData.Ciphertext
+			
+			// Check if there was an encryption error
+			if encryptErr := <-errChan; encryptErr != nil {
+			    return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to encrypt file stream"})
+			}
 		}
 
 		if expiresInMinutes <= 0 {
@@ -152,11 +199,10 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 
 		secret := secret.Secret{
 			Text:         encryptedTextString,
-			IsFile:       isFile,
 			FileName:     fileName,
-			FileContent:  encryptedFileBytes,
+			FileKey:      fileKey,
+			TextNonce:    encryptedTextNonce,
 			FileNonce:    encryptedFileNonce,
-			Nonce:        encryptedTextNonce,
 			CreatedAt:    time.Now().UTC(),
 			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
 			PasswordHash: string(passwordHash)}
@@ -249,25 +295,38 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 		if secret.Text != "" {
 			encData := &encryption.EncryptedData{
 				Ciphertext: []byte(secret.Text),
-				Nonce:      secret.Nonce,
+				Nonce:      secret.TextNonce,
 			}
 			text, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to decrypt text"})
 			}
-			decryptedText = text
+			decryptedText = string(text)
 		}
 
 		var fileData string
-		if secret.IsFile {
-			encData := &encryption.EncryptedData{
-				Ciphertext: secret.FileContent,
-				Nonce:      secret.FileNonce,
+		if secret.FileKey != "" {
+			obj, err := storage.Client.GetObject(c.Context(), storage.BucketName, secret.FileKey, minio.GetObjectOptions{})
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get file from MinIO"})
 			}
-			decBytes, err := encryption.Decrypt(encData, encryptionKey)
+			defer obj.Close()
+
+			// Stream the decrypted file directly to a buffer
+			// For base64 we need the file into memory anyway to encode it
+			// IF files get larger, base64 encoding will become an issue and we'll need a different delivery mechanism
+			var decBuf bytes.Buffer
+			err = encryption.DecryptStream(obj, &decBuf, encryptionKey, secret.FileNonce)
 			if err != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to decrypt file"})
 			}
+			decBytes := decBuf.Bytes()
+
+			// Validate file type
+			if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "File type not accepted"})
+			}
+
 			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
 		}
 
@@ -283,6 +342,9 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			if result := db.Unscoped().Delete(&secret); result.Error != nil {
 				log.Printf("Failed to delete secret %s: %v", id, result.Error)
 			}
+			if secret.FileKey != "" {
+				_ = storage.Client.RemoveObject(context.Background(), storage.BucketName, secret.FileKey, minio.RemoveObjectOptions{})
+			}
 		} else {
 			if result := db.Model(&secret).
 				Update("deleted_at", time.Now().UTC()); result.Error != nil {
@@ -292,7 +354,6 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 
 		return c.JSON(fiber.Map{
 			"text":     decryptedText,
-			"isFile":   secret.IsFile,
 			"fileName": secret.FileName,
 			"fileData": fileData,
 		})
@@ -346,33 +407,12 @@ func indexPageHandler() fiber.Handler {
 func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		text := c.FormValue("text")
-		password := c.FormValue("password")
-		expiresInMinutesStr := c.FormValue("expiresInMinutes")
+		var password string
+		var expiresInMinutesStr string
 
 		var isFile bool
 		var fileName string
-		var fileContentBytes []byte
-
-		if fileHeader, err := c.FormFile("file"); err == nil {
-			isFile = true
-			fileName = fileHeader.Filename
-			
-			file, err := fileHeader.Open()
-			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
-					"Error": "Failed to process file",
-				})
-			}
-			defer file.Close()
-			
-			buf := new(bytes.Buffer)
-			if _, err := io.Copy(buf, file); err != nil {
-				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
-					"Error": "Failed to read file",
-				})
-			}
-			fileContentBytes = buf.Bytes()
-		}
+		var fileStream io.Reader
 
 		renderErr := func(msg string) error {
 			return c.Status(fiber.StatusBadRequest).Render("index", fiber.Map{
@@ -380,11 +420,50 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			})
 		}
 
+		if fileHeader, err := c.FormFile("file"); err == nil {
+			isFile = true
+			fileName = fileHeader.Filename
+
+			// Validate file size immediately using header
+			if fileHeader.Size > MaxFileLength {
+				return renderErr("Content is too long (max 10MB for text and 200MB for files)")
+			}
+
+			file, err := fileHeader.Open()
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
+					"Error": "Failed to process file",
+				})
+			}
+			defer file.Close()
+
+			// Read first 512 bytes for type validation
+			headerBuffer := make([]byte, 512)
+			n, readErr := io.ReadFull(file, headerBuffer)
+			if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
+					"Error": "Failed to read file header",
+				})
+			}
+			// Only validate the bytes we actually read
+			headerBuffer = headerBuffer[:n]
+
+			// Validate file type
+			if err := filevalidation.ValidateFileType(headerBuffer); err != nil {
+				return renderErr("File type not accepted")
+			}
+			
+			// Reconstruct stream: the 512 bytes we read + the remainder of the file
+			fileStream = io.MultiReader(bytes.NewReader(headerBuffer), file)
+		}
+
 		if text == "" && !isFile {
 			return renderErr("Either text or a file is required")
 		}
-		if len(text) > MaxTextLength || len(fileContentBytes) > MaxTextLength {
-			return renderErr("Content is too long (max 10MB)")
+		// Text size validation
+		// Size for files is now validated immediately upon receiving the header
+		if len(text) > MaxTextLength {
+			return renderErr("Content is too long (max 10MB for text and 200MB for files)")
 		}
 
 		expiresInMinutes := 0
@@ -408,7 +487,7 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		var encryptedTextNonce []byte
 		var encryptedTextString string
 		if text != "" {
-			encData, err := encryption.Encrypt(text, encryptionKey)
+			encData, err := encryption.Encrypt([]byte(text), encryptionKey)
 			if err != nil {
 				return renderErr("Failed to encrypt text")
 			}
@@ -416,15 +495,37 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			encryptedTextString = string(encData.Ciphertext)
 		}
 
+		var fileKey string
 		var encryptedFileNonce []byte
-		var encryptedFileBytes []byte
 		if isFile {
-			encData, err := encryption.Encrypt(string(fileContentBytes), encryptionKey)
+			fileKey = uuid.New().String()
+			
+			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
+			// in-memory copy of the encrypted bytes.
+			pr, pw := io.Pipe()
+			
+			// We use a channel to communicate errors back from the encryptor goroutine
+			errChan := make(chan error, 1)
+			
+			go func() {
+				// EncryptStream will read from fileStream, encrypt, and write to pw
+				iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
+				if encryptErr == nil {
+					encryptedFileNonce = iv
+				}
+				errChan <- encryptErr
+				pw.CloseWithError(encryptErr)
+			}()
+			
+			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
 			if err != nil {
-				return renderErr("Failed to encrypt file")
+				return renderErr("Failed to upload file to MinIO")
 			}
-			encryptedFileNonce = encData.Nonce
-			encryptedFileBytes = encData.Ciphertext
+			
+			// Check if there was an encryption error
+			if encryptErr := <-errChan; encryptErr != nil {
+			    return renderErr("Failed to encrypt file stream")
+			}
 		}
 
 		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -434,11 +535,10 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 
 		newSecret := secret.Secret{
 			Text:         encryptedTextString,
-			IsFile:       isFile,
 			FileName:     fileName,
-			FileContent:  encryptedFileBytes,
+			FileKey:      fileKey,
+			TextNonce:    encryptedTextNonce,
 			FileNonce:    encryptedFileNonce,
-			Nonce:        encryptedTextNonce,
 			CreatedAt:    time.Now().UTC(),
 			ExpiresAt:    time.Now().UTC().Add(time.Duration(expiresInMinutes) * time.Minute),
 			PasswordHash: string(passwordHash),
@@ -524,25 +624,37 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 		if s.Text != "" {
 			encData := &encryption.EncryptedData{
 				Ciphertext: []byte(s.Text),
-				Nonce:      s.Nonce,
+				Nonce:      s.TextNonce,
 			}
 			txt, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
 				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt text")
 			}
-			decryptedText = txt
+			decryptedText = string(txt)
 		}
 
 		var fileData string
-		if s.IsFile {
-			encData := &encryption.EncryptedData{
-				Ciphertext: s.FileContent,
-				Nonce:      s.FileNonce,
+		if s.FileKey != "" {
+			obj, err := storage.Client.GetObject(c.Context(), storage.BucketName, s.FileKey, minio.GetObjectOptions{})
+			if err != nil {
+				return renderErr(fiber.StatusInternalServerError, "Failed to get file from MinIO")
 			}
-			decBytes, err := encryption.Decrypt(encData, encryptionKey)
+			defer obj.Close()
+
+			// Similarly, view page needs to evaluate file size memory tradeoffs for base64 encoding
+			var decBuf bytes.Buffer
+			err = encryption.DecryptStream(obj, &decBuf, encryptionKey, s.FileNonce)
 			if err != nil {
 				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt file")
 			}
+			
+			decBytes := decBuf.Bytes()
+
+			// Validate file type
+			if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
+				return renderErr(fiber.StatusBadRequest, "File type not accepted")
+			}
+
 			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
 		}
 
@@ -553,15 +665,20 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			if result := db.Unscoped().Delete(&s); result.Error != nil {
 				log.Printf("Failed to delete secret %s: %v", id, result.Error)
 			}
+			if s.FileKey != "" {
+				_ = storage.Client.RemoveObject(context.Background(), storage.BucketName, s.FileKey, minio.RemoveObjectOptions{})
+			}
 		} else {
 			if result := db.Model(&s).Update("deleted_at", time.Now().UTC()); result.Error != nil {
 				log.Printf("Failed to mark secret deleted %s: %v", id, result.Error)
 			}
 		}
 
+		isFile := s.FileKey != ""
+
 		return c.Render("view", fiber.Map{
 			"SecretText": decryptedText,
-			"IsFile":     s.IsFile,
+			"IsFile":     isFile,
 			"FileName":   s.FileName,
 			"FileData":   fileData,
 		})

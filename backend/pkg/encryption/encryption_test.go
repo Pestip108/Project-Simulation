@@ -11,7 +11,7 @@ func TestEncryptDecrypt(t *testing.T) {
 	plaintext := "Hello, World!"
 
 	// Test Encryption
-	encryptedData, err := Encrypt(plaintext, key)
+	encryptedData, err := Encrypt([]byte(plaintext), key)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestEncryptDecrypt(t *testing.T) {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
 
-	if decrypted != plaintext {
+	if string(decrypted) != plaintext {
 		t.Errorf("Expected %s, got %s", plaintext, decrypted)
 	}
 }
@@ -43,12 +43,12 @@ func TestEncryptUniqueness(t *testing.T) {
 	key := []byte("12345678901234567890123456789012")
 	plaintext := "Hello, World!"
 
-	c1, err := Encrypt(plaintext, key)
+	c1, err := Encrypt([]byte(plaintext), key)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	c2, err := Encrypt(plaintext, key)
+	c2, err := Encrypt([]byte(plaintext), key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestEncryptUniqueness(t *testing.T) {
 
 func TestInvalidKey(t *testing.T) {
 	key := []byte("shortkey")
-	_, err := Encrypt("test", key)
+	_, err := Encrypt([]byte("test"), key)
 	if err == nil {
 		t.Error("Expected error with invalid key size")
 	}

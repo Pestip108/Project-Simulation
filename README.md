@@ -28,6 +28,7 @@ A secure, "view-once" message and file sharing application. Users can share encr
 | Web Framework | [Fiber v2](https://gofiber.io/) |
 | Templates   | Fiber HTML engine (`gofiber/template/html/v2`) |
 | Database    | [SQLite](https://www.sqlite.org/) via [GORM](https://gorm.io/) + [glebarez/sqlite](https://github.com/glebarez/sqlite) (CGO) |
+| File Storage | [MinIO](https://min.io/) (S3 Compatible) |
 | Encryption  | `crypto/aes` (AES-256-GCM) |
 | Password Hashing | `golang.org/x/crypto/bcrypt` |
 | Serverless  | [AWS Lambda](https://aws.amazon.com/lambda/) via `aws-lambda-go-api-proxy` |
@@ -60,6 +61,9 @@ APPDEBUG=0
 | `CORS_ALLOWED_ORIGINS` | Allowed CORS origins for the JSON API |
 | `ENCRYPTION_KEY` | **Must be exactly 32 bytes** (AES-256) |
 | `APPDEBUG` | `0` = production (hard delete), `1` = debug (soft delete) |
+| `MINIO_ENDPOINT` | The address to your MinIO container (e.g., `localhost:9000`) |
+| `MINIO_ROOT_USER` | The root username to access MinIO |
+| `MINIO_ROOT_PASSWORD` | The root password to access MinIO |
 
 ## 📂 Project Structure
 
@@ -96,7 +100,15 @@ Project-Simulation/
 docker build -t my-go-app .
 ```
 
-### Run the container
+### Run the dependencies (MinIO Docker Container)
+
+You must be running MinIO locally for file storage to work properly. Use this Docker command to spin up an ephemeral MinIO container on ports `9000` (API) and `9001` (Console):
+
+```bash
+docker run -p 9000:9000 -p 9001:9001 -e "MINIO_ROOT_USER=minioadmin" -e "MINIO_ROOT_PASSWORD=minioadmin" quay.io/minio/minio server /data --console-address ":9001"
+```
+
+### Run the web container
 
 ```bash
 docker run -p 8080:8080 \
