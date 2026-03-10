@@ -56,16 +56,44 @@
             margin-top: 1rem;
             word-break: break-all;
         }
+
+        .auth-bar {
+            text-align: right;
+            margin-bottom: 1rem;
+            font-size: 0.9em;
+        }
+
+        .notice {
+            background: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            margin-bottom: 1rem;
+        }
     </style>
 </head>
 
 <body>
     <div class="container">
         <h1>Share a Secret</h1>
-        <label for="secretFile" style="display:block; margin-bottom: 0.5rem; font-weight: bold;">Upload a File and/or
-            Enter Text</label>
-        <div id="fileInputGroup" style="margin-bottom: 1rem;">
-            <input type="file" id="secretFile" style="width: 100%;" />
+        <div id="authBar" class="auth-bar">
+            <!-- Auth status injected here -->
+        </div>
+
+        <div id="fileUploadSection">
+            <label for="secretFile" style="display:block; margin-bottom: 0.5rem; font-weight: bold;">Upload a File
+                and/or
+                Enter Text</label>
+            <div id="fileInputGroup" style="margin-bottom: 1rem;">
+                <input type="file" id="secretFile" style="width: 100%;" />
+            </div>
+        </div>
+
+        <div id="guestNotice" class="notice" style="display: none;">
+            <strong>Notice:</strong> You must <a href="/login" style="color: #533f03; font-weight: bold;">log in</a>
+            with a verified email to upload files. You can still share text secrets anonymously below.
+            <label for="secretFile" style="display:block; margin-top: 0.5rem; font-weight: bold;">Enter Text</label>
         </div>
 
         <div id="textInputGroup">
@@ -92,6 +120,35 @@
 
     <script src="/config.js"></script>
     <script>
+        // Check auth status on load
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                // Since this frontend uses an API, we can either check a token in localStorage 
+                // or if we rely on cookies set by the backend, we check a specific endpoint.
+                // Assuming cookies are sent automatically (credentials: 'include') if on same domain.
+                // But the easiest way to know if we are authenticated for files is to look for the cookie.
+                // If it's pure API and JS, we might need a /api/me endpoint. For now, since it's hosted
+                // together or separate, we'll assume the cookie `session_token` exists.
+                const hasCookie = document.cookie.includes('session_token=');
+
+                const authBar = document.getElementById('authBar');
+                const fileSection = document.getElementById('fileUploadSection');
+                const guestNotice = document.getElementById('guestNotice');
+
+                if (hasCookie) {
+                    authBar.innerHTML = `<span style="color: green;">✓ Authenticated</span> | <a href="/logout">Logout</a>`;
+                    fileSection.style.display = 'block';
+                    guestNotice.style.display = 'none';
+                } else {
+                    authBar.innerHTML = `<a href="/login">Login</a> | <a href="/register">Register</a>`;
+                    fileSection.style.display = 'none';
+                    guestNotice.style.display = 'block';
+                }
+            } catch (err) {
+                console.error('Error checking auth', err);
+            }
+        });
+
         async function shareSecret() {
             const fileInput = document.getElementById('secretFile');
             const expiresInMinutes = parseInt(document.getElementById('expiration').value);
@@ -120,10 +177,16 @@
 
                 const response = await fetch(`${window.APP_CONFIG.API_URL}/api/share`, {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    // If credentials are required for cookie transmission across origins
+                    // credentials: 'include'
                 });
 
                 const data = await response.json();
+
+                if (response.status === 401) {
+                    throw new Error('You must be logged in to upload files. Please login first.');
+                }
 
                 if (!response.ok) throw new Error('Failed to share secret: ' + data.error);
 

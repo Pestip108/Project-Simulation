@@ -9,6 +9,7 @@ import (
 
 	template "github.com/Pestip108/Project-Simulation/backend"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/models"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
@@ -59,7 +60,7 @@ func main() {
 	}
 
 	// Auto Migrate the schema
-	if err := db.AutoMigrate(&secret.Secret{}); err != nil {
+	if err := db.AutoMigrate(&secret.Secret{}, &models.User{}); err != nil {
 		log.Fatal("Failed to auto migrate:", err)
 	}
 

@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"github.com/Pestip108/Project-Simulation/backend/pkg/auth"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -40,19 +41,32 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, encryptionKey []byte, scheduler *h
 	api := app.Group("/api")
 
 	// Upload: no small-limit middleware. Instead, enforce the upload cap.
-	api.Post("/share", smallBodyLimit(uploadLimit), createSecretHandler(db, encryptionKey, scheduler))
+	api.Post("/share", smallBodyLimit(uploadLimit), auth.OptionalAuthMiddleware(db), createSecretHandler(db, encryptionKey, scheduler))
 
 	// All other API routes: enforce the 1 MB soft cap.
 	api.Post("/view/:id", smallBodyLimit(smallLimit), viewSecretHandler(db, encryptionKey, scheduler))
 	api.Get("/metrics", smallBodyLimit(smallLimit), metricsHandler(db))
 
+	// Auth API routes
+	api.Post("/register", smallBodyLimit(smallLimit), registerHandler(db))
+	api.Get("/verify", smallBodyLimit(smallLimit), verifyHandler(db))
+	api.Post("/login", smallBodyLimit(smallLimit), loginHandler(db))
+	api.Post("/logout", smallBodyLimit(smallLimit), logoutHandler(db))
+
 	// ── HTML page routes (no JS) ─────────────────────────────────────────
-	app.Get("/", smallBodyLimit(smallLimit), indexPageHandler())
+	app.Get("/", smallBodyLimit(smallLimit), indexPageHandler(db))
 
 	// Upload: no small-limit middleware; enforce the upload cap instead.
-	app.Post("/share", smallBodyLimit(uploadLimit), sharePageHandler(db, encryptionKey, scheduler))
+	app.Post("/share", smallBodyLimit(uploadLimit), auth.OptionalAuthMiddleware(db), sharePageHandler(db, encryptionKey, scheduler))
 
 	// View secret routes: enforce the 1 MB soft cap.
 	app.Get("/view/:id", smallBodyLimit(smallLimit), viewPageHandler())
 	app.Post("/view/:id", smallBodyLimit(smallLimit), submitViewPageHandler(db, encryptionKey, scheduler))
+
+	// Auth page routes
+	app.Get("/register", smallBodyLimit(smallLimit), registerPageHandler())
+	app.Post("/register", smallBodyLimit(smallLimit), submitRegisterPageHandler(db))
+	app.Get("/login", smallBodyLimit(smallLimit), loginPageHandler())
+	app.Post("/login", smallBodyLimit(smallLimit), submitLoginPageHandler(db))
+	app.Get("/logout", smallBodyLimit(smallLimit), logoutHandler(db))
 }

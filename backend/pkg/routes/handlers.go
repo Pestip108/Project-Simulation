@@ -14,6 +14,7 @@ import (
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
 	filevalidation "github.com/Pestip108/Project-Simulation/backend/pkg/file_validation"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/models"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
 	"github.com/gofiber/fiber/v2"
@@ -42,6 +43,13 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		var fileStream io.Reader
 
 		if file, err := c.FormFile("file"); err == nil {
+			// Check authentication
+			user := c.Locals("user")
+			if user == nil {
+				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+					"error": "You must be signed in with a verified email to upload files",
+				})
+			}
 			isFile = true
 			fileName = file.Filename
 
@@ -84,6 +92,9 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 		text = c.FormValue("text")
 		password = c.FormValue("password")
 		expiresInMinutesStr := c.FormValue("expiresInMinutes")
+		if expiresInMinutesStr == "" {
+			expiresInMinutesStr = c.FormValue("expiresInMinutesStr")
+		}
 		fmt.Sscanf(expiresInMinutesStr, "%d", &expiresInMinutes)
 
 		// Fallback to JSON API
@@ -396,9 +407,20 @@ func metricsHandler(db *gorm.DB) fiber.Handler {
 // ── Page handlers (no JS, HTML form-based) ────────────────────────────────────
 
 // indexPageHandler renders the home page with the create-secret form.
-func indexPageHandler() fiber.Handler {
+func indexPageHandler(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		return c.Render("index", fiber.Map{})
+		var isAuthed bool
+		sessionToken := c.Cookies("session_token")
+		if sessionToken != "" {
+			var user models.User
+			if result := db.Where("session_token = ?", sessionToken).First(&user); result.Error == nil {
+				isAuthed = true
+			}
+		}
+
+		return c.Render("index", fiber.Map{
+			"IsAuthenticated": isAuthed,
+		})
 	}
 }
 
@@ -407,8 +429,20 @@ func indexPageHandler() fiber.Handler {
 func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		text := c.FormValue("text")
-		var password string
-		var expiresInMinutesStr string
+		password := c.FormValue("password")
+		expiresInMinutesStr := c.FormValue("expiresInMinutes")
+		if expiresInMinutesStr == "" {
+			expiresInMinutesStr = c.FormValue("expiresInMinutesStr")
+		}
+
+		var isAuthed bool
+		sessionToken := c.Cookies("session_token")
+		if sessionToken != "" {
+			var user models.User
+			if result := db.Where("session_token = ?", sessionToken).First(&user); result.Error == nil {
+				isAuthed = true
+			}
+		}
 
 		var isFile bool
 		var fileName string
@@ -421,6 +455,11 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		}
 
 		if fileHeader, err := c.FormFile("file"); err == nil {
+			// Check authentication
+			user := c.Locals("user")
+			if user == nil {
+				return renderErr("You must be signed in with a verified email to upload files")
+			}
 			isFile = true
 			fileName = fileHeader.Filename
 
@@ -555,7 +594,8 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		link := scheme + "://" + c.Hostname() + "/view/" + newSecret.UUID
 
 		return c.Render("index", fiber.Map{
-			"Link": link,
+			"Link":            link,
+			"IsAuthenticated": isAuthed,
 		})
 	}
 }
