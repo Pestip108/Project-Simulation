@@ -29,13 +29,20 @@
         {{else}}
         {{if .Error}}
         <p class="error">{{.Error}}</p>
-        {{end}}
-
+        {{else}}
         {{if .ID}}
-        <form method="POST" action="/view/{{.ID}}">
-            <input type="password" name="password" placeholder="Password" required autocomplete="off" />
+        {{if .RequirePassword}}
+        <form id="reveal-form" method="POST" action="/view/{{.ID}}/confirm">
+            <input type="password" name="password" placeholder="Password (if set)" autocomplete="off" />
             <button type="submit">Reveal Secret</button>
         </form>
+        {{else}}
+        <form id="reveal-form" method="POST" action="/view/{{.ID}}">
+            <p>Are you sure you want to reveal the secret? It will be deleted indefinetly!</p>
+            <button type="submit">Reveal Secret</button>
+        </form>
+        {{end}}
+        {{end}}
         {{end}}
         {{end}}
     </div>
