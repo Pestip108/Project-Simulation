@@ -14,6 +14,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/joho/godotenv"
 	"gorm.io/gorm"
 )
@@ -21,6 +22,7 @@ import (
 var adapter *fiberadapter.FiberLambda
 var encryptionKey []byte
 var allowedOrigins string
+var store *session.Store
 
 func init() {
 	godotenv.Load()
@@ -57,12 +59,14 @@ func init() {
 
 	app := fiber.New()
 
+	store = session.New() // default in-memory store
+
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept",
 	}))
 
-	routes.SetupRoutes(app, db, encryptionKey, scheduler)
+	routes.SetupRoutes(app, db, encryptionKey, scheduler, store)
 
 	adapter = fiberadapter.New(app)
 }

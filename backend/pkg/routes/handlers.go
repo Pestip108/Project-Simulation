@@ -18,6 +18,7 @@ import (
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/crypto/bcrypt"
@@ -181,31 +182,29 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 			})
 		}
 
-		// Validate password
-		if password == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Password is required",
-			})
-		}
+		// Validate password if provided
+		var passwordHash []byte
+		if password != "" {
+			if len(password) < MinPasswordLength {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Password must be at least 6 characters long",
+				})
+			}
 
-		if len(password) < MinPasswordLength {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Password must be at least 6 characters long",
-			})
-		}
+			if len(password) > MaxPasswordLength {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Password is too long (max 72 characters)",
+				})
+			}
 
-		if len(password) > MaxPasswordLength {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Password is too long (max 72 characters)",
-			})
-		}
-
-		// Hash the password
-		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to hash password",
-			})
+			// Hash the password
+			var err error
+			passwordHash, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+					"error": "Failed to hash password",
+				})
+			}
 		}
 
 		secret := secret.Secret{
@@ -280,18 +279,20 @@ func viewSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secret
 			})
 		}
 
-		if input.Password == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Password required",
-			})
-		}
+		// Check password if required
+		if secret.PasswordHash != "" {
+			if input.Password == "" {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+					"error": "Password required",
+				})
+			}
 
-		// Check password
-		err := bcrypt.CompareHashAndPassword([]byte(secret.PasswordHash), []byte(input.Password))
-		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "Invalid password",
-			})
+			err := bcrypt.CompareHashAndPassword([]byte(secret.PasswordHash), []byte(input.Password))
+			if err != nil {
+				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+					"error": "Invalid password",
+				})
+			}
 		}
 
 		// Check expiration
@@ -513,14 +514,21 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			return renderErr("Expiration time cannot exceed 7 days")
 		}
 
-		if password == "" {
-			return renderErr("Password is required")
-		}
-		if len(password) < MinPasswordLength {
-			return renderErr("Password must be at least 6 characters long")
-		}
-		if len(password) > MaxPasswordLength {
-			return renderErr("Password is too long (max 72 characters)")
+		// Validate password if provided
+		var passwordHash []byte
+		if password != "" {
+			if len(password) < MinPasswordLength {
+				return renderErr("Password must be at least 6 characters long")
+			}
+			if len(password) > MaxPasswordLength {
+				return renderErr("Password is too long (max 72 characters)")
+			}
+
+			var err error
+			passwordHash, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			if err != nil {
+				return renderErr("Failed to hash password")
+			}
 		}
 
 		var encryptedTextNonce []byte
@@ -567,10 +575,7 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			}
 		}
 
-		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		if err != nil {
-			return renderErr("Failed to hash password")
-		}
+		// Secret is created using the passwordHash defined above (if any)
 
 		newSecret := secret.Secret{
 			Text:         encryptedTextString,
@@ -602,21 +607,92 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 
 // viewPageHandler renders the view page with the password form (GET).
 // The secret UUID from the URL is passed to the template so the form knows where to POST.
-func viewPageHandler() fiber.Handler {
+func viewPageHandler(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
-		if _, err := uuid.Parse(id); err != nil {
-			return c.Status(fiber.StatusBadRequest).Render("view", fiber.Map{
-				"Error": "Invalid secret ID format",
+
+		renderErr := func(status int, msg string) error {
+			return c.Status(status).Render("view", fiber.Map{
+				"ID":    id,
+				"Error": msg,
 			})
 		}
-		return c.Render("view", fiber.Map{"ID": id})
+
+		if _, err := uuid.Parse(id); err != nil {
+			return renderErr(fiber.StatusBadRequest, "Invalid secret ID format")
+		}
+
+		var s secret.Secret
+		if result := db.First(&s, "uuid = ?", id); result.Error != nil {
+			if result.Error == gorm.ErrRecordNotFound {
+				return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
+			}
+			return renderErr(fiber.StatusInternalServerError, "Database error")
+		}
+
+		if s.PasswordHash != "" {
+			return c.Render("view", fiber.Map{
+				"ID":              id,
+				"RequirePassword": true,
+			})
+		}
+
+		return c.Render("view", fiber.Map{
+			"ID":              id,
+			"RequirePassword": false,
+		})
+	}
+}
+
+func confirmViewPageHandler(db *gorm.DB, store *session.Store) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		id := c.Params("id")
+
+		renderErr := func(status int, msg string) error {
+			return c.Status(status).Render("view", fiber.Map{
+				"ID":              id,
+				"Error":           msg,
+				"RequirePassword": true,
+			})
+		}
+
+		if _, err := uuid.Parse(id); err != nil {
+			return renderErr(fiber.StatusBadRequest, "Invalid secret ID format")
+		}
+
+		var s secret.Secret
+		if result := db.First(&s, "uuid = ?", id); result.Error != nil {
+			if result.Error == gorm.ErrRecordNotFound {
+				return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
+			}
+			return renderErr(fiber.StatusInternalServerError, "Database error")
+		}
+
+		password := c.FormValue("password")
+		if s.PasswordHash != "" {
+			if password == "" {
+				return renderErr(fiber.StatusBadRequest, "Password is required")
+			}
+
+			if err := bcrypt.CompareHashAndPassword([]byte(s.PasswordHash), []byte(password)); err != nil {
+				return renderErr(fiber.StatusUnauthorized, "Invalid password")
+			}
+		}
+
+		sess, _ := store.Get(c)
+		sess.Set("confirmed_secret_pass", password)
+		sess.Save()
+
+		return c.Render("view", fiber.Map{
+			"ID":              id,
+			"RequirePassword": false,
+		})
 	}
 }
 
 // submitViewPageHandler handles the password form POST, decrypts the secret,
 // and re-renders the view page with the plaintext (or an error message).
-func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
+func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler, store *session.Store) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
 
@@ -646,13 +722,20 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
 		}
 
-		password := c.FormValue("password")
-		if password == "" {
-			return renderErr(fiber.StatusBadRequest, "Password is required")
+		sess, _ := store.Get(c)
+		passInterface := sess.Get("confirmed_secret_pass")
+		var password string
+		if passInterface != nil {
+			password = passInterface.(string)
 		}
+		if s.PasswordHash != "" {
+			if password == "" {
+				return renderErr(fiber.StatusBadRequest, "Password is required")
+			}
 
-		if err := bcrypt.CompareHashAndPassword([]byte(s.PasswordHash), []byte(password)); err != nil {
-			return renderErr(fiber.StatusUnauthorized, "Invalid password")
+			if err := bcrypt.CompareHashAndPassword([]byte(s.PasswordHash), []byte(password)); err != nil {
+				return renderErr(fiber.StatusUnauthorized, "Invalid password")
+			}
 		}
 
 		if time.Now().UTC().After(s.ExpiresAt) {

@@ -18,6 +18,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
+	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
 	"gorm.io/gorm"
@@ -27,6 +28,7 @@ import (
 var encryptionKey []byte
 var allowedOrigins string
 var port string
+var store *session.Store
 
 func init() {
 	godotenv.Load()
@@ -106,6 +108,8 @@ func main() {
 		},
 	})
 
+	store = session.New() // default in-memory store
+
 	// Configure CORS for the JSON API routes
 	app.Use("/api", cors.New(cors.Config{
 		AllowOrigins: allowedOrigins,
@@ -134,7 +138,7 @@ func main() {
 	}
 
 	// Setup routes (API + page routes)
-	routes.SetupRoutes(app, db, encryptionKey, scheduler)
+	routes.SetupRoutes(app, db, encryptionKey, scheduler, store)
 
 	// Serve embedded static files (CSS, etc.) from the binary
 	staticSubFS, err := fs.Sub(template.StaticFS, "static")
