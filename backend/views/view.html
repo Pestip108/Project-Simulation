@@ -39,6 +39,9 @@
         {{else}}
         <form id="reveal-form" method="POST" action="/view/{{.ID}}">
             <p>Are you sure you want to reveal the secret? It will be deleted indefinetly!</p>
+            {{if .PasswordEntered}}
+            <input type="text" name="password" value="{{.PasswordEntered}}" style="visibility: hidden;" readonly />
+            {{end}}
             <button type="submit">Reveal Secret</button>
         </form>
         {{end}}

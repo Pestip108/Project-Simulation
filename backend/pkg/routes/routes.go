@@ -4,7 +4,6 @@ import (
 	"github.com/Pestip108/Project-Simulation/backend/pkg/auth"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/session"
 	"gorm.io/gorm"
 )
 
@@ -32,11 +31,11 @@ func smallBodyLimit(maxBytes int64) fiber.Handler {
 }
 
 // SetupRoutes configures all API and page routes.
-func SetupRoutes(app *fiber.App, db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler, store *session.Store) {
+func SetupRoutes(app *fiber.App, db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) {
 	// Soft body-size cap for every non-upload API route (1 MB).
 	const smallLimit = int64(1 * 1024 * 1024)
-	// Upload routes accept up to 200 MB; they do NOT use smallBodyLimit.
-	const uploadLimit = int64(200 * 1024 * 1024)
+	// Upload routes accept up to 200 MB --> 6MB for Lambda; they do NOT use smallBodyLimit.
+	const uploadLimit = int64(6 * 1024 * 1024)
 
 	// ── JSON API routes ──────────────────────────────────────────────────
 	api := app.Group("/api")
@@ -62,8 +61,8 @@ func SetupRoutes(app *fiber.App, db *gorm.DB, encryptionKey []byte, scheduler *h
 
 	// View secret routes: enforce the 1 MB soft cap.
 	app.Get("/view/:id", smallBodyLimit(smallLimit), viewPageHandler(db))
-	app.Post("/view/:id/confirm", smallBodyLimit(smallLimit), confirmViewPageHandler(db, store))
-	app.Post("/view/:id", smallBodyLimit(smallLimit), submitViewPageHandler(db, encryptionKey, scheduler, store))
+	app.Post("/view/:id/confirm", smallBodyLimit(smallLimit), confirmViewPageHandler(db))
+	app.Post("/view/:id", smallBodyLimit(smallLimit), submitViewPageHandler(db, encryptionKey, scheduler))
 
 	// Auth page routes
 	app.Get("/register", smallBodyLimit(smallLimit), registerPageHandler())

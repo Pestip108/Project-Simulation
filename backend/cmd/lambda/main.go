@@ -2,77 +2,134 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
 	"log"
+	"net/http"
 	"os"
+	"sync"
+	"time"
 
+	template "github.com/Pestip108/Project-Simulation/backend"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/models"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 	fiberadapter "github.com/awslabs/aws-lambda-go-api-proxy/fiber"
-	"github.com/glebarez/sqlite"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/session"
+	"github.com/gofiber/fiber/v2/middleware/filesystem"
+	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
-var adapter *fiberadapter.FiberLambda
-var encryptionKey []byte
-var allowedOrigins string
-var store *session.Store
+var (
+	fiberLambda   *fiberadapter.FiberLambda
+	encryptionKey []byte
+	initOnce      sync.Once
+	initErr       error
+)
 
-func init() {
-	godotenv.Load()
-
-	allowedOrigins = os.Getenv("CORS_ALLOWED_ORIGINS")
-	if allowedOrigins == "" {
-		log.Fatal("ALLOWED_ORIGINS not set")
+// SetupApp initializes Fiber, DB, scheduler, and S3
+func SetupApp() (*fiber.App, error) {
+	if os.Getenv("AWS_LAMBDA_FUNCTION_NAME") == "" { // local dev
+		_ = godotenv.Load()
 	}
 
 	key := os.Getenv("ENCRYPTION_KEY")
 	if key == "" {
-		log.Fatal("ENCRYPTION_KEY not set")
-	}
-
-	if len(key) != 32 {
-		log.Fatal("ENCRYPTION_KEY must be 32 bytes for AES-256")
+		return nil, fmt.Errorf("ENCRYPTION_KEY not set")
 	}
 	encryptionKey = []byte(key)
 
-	db, err := gorm.Open(sqlite.Open("secrets.db"), &gorm.Config{})
-	if err != nil {
-		log.Fatal("Failed to connect to database:", err)
+	dsn := os.Getenv("DATABASE_DSN")
+	if dsn == "" {
+		return nil, fmt.Errorf("DATABASE_DSN not set")
 	}
 
-	// Auto Migrate the schema
-	if err := db.AutoMigrate(&secret.Secret{}); err != nil {
-		log.Fatal("Failed to auto migrate:", err)
+	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to DB: %w", err)
 	}
+
+	if err := db.AutoMigrate(&secret.Secret{}, &models.User{}); err != nil {
+		return nil, fmt.Errorf("failed to auto-migrate: %w", err)
+	}
+
+	// DB connection pooling
+	sqlDB, _ := db.DB()
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	scheduler := heap.NewSecretScheduler(db)
 	if err := scheduler.LoadPendingSecrets(); err != nil {
-		log.Fatal(err)
+		log.Println("Warning: failed to load pending secrets:", err)
 	}
 
-	app := fiber.New()
+	// Initialize S3 Bucket
+	storage.InitS3()
 
-	store = session.New() // default in-memory store
+	// Embedded templates
+	viewsSubFS, err := fs.Sub(template.ViewsFS, "views")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create views sub-FS: %w", err)
+	}
 
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowHeaders: "Origin, Content-Type, Accept",
+	app := fiber.New(fiber.Config{
+		Views:        html.NewFileSystem(http.FS(viewsSubFS), ".html"),
+		BodyLimit:    6 * 1024 * 1024, // 6MB for Lambda
+		ReadTimeout:  1 * time.Minute,
+		WriteTimeout: 1 * time.Minute,
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			if e, ok := err.(*fiber.Error); ok && e.Code == fiber.StatusRequestEntityTooLarge {
+				return c.Status(fiber.StatusRequestEntityTooLarge).Render("index", fiber.Map{
+					"Error": "Content is too long (max 6MB)",
+				})
+			}
+			return fiber.DefaultErrorHandler(c, err)
+		},
+	})
+
+	staticSubFS, err := fs.Sub(template.StaticFS, "static")
+	if err != nil {
+		log.Fatal("Failed to create static sub-filesystem:", err)
+	}
+	app.Use("/static", filesystem.New(filesystem.Config{
+		Root: http.FS(staticSubFS),
 	}))
 
-	routes.SetupRoutes(app, db, encryptionKey, scheduler, store)
-
-	adapter = fiberadapter.New(app)
+	routes.SetupRoutes(app, db, encryptionKey, scheduler)
+	return app, nil
 }
 
+// LazyInit ensures the Fiber app is initialized once
+func LazyInit() error {
+	initOnce.Do(func() {
+		app, err := SetupApp()
+		if err != nil {
+			initErr = err
+			return
+		}
+		fiberLambda = fiberadapter.New(app)
+	})
+	return initErr
+}
+
+// Handler is the Lambda entry point
 func Handler(ctx context.Context, req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
-	return adapter.ProxyWithContext(ctx, req)
+	if err := LazyInit(); err != nil {
+		return events.APIGatewayProxyResponse{
+			StatusCode: 500,
+			Body:       "Failed to initialize Lambda: " + err.Error(),
+		}, nil
+	}
+
+	return fiberLambda.ProxyWithContext(ctx, req)
 }
 
 func main() {
