@@ -17,8 +17,8 @@ import (
 	"github.com/Pestip108/Project-Simulation/backend/pkg/models"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/session"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"golang.org/x/crypto/bcrypt"
@@ -26,9 +26,9 @@ import (
 )
 
 const (
-	MaxTextLength        = 10 * 1024 * 1024  // 10MB limit
-	MaxFileLength        = 200 * 1024 * 1024 // 200MB limit
-	MaxExpirationMinutes = 10080             // 7 days limit
+	MaxTextLength        = 6 * 1024 * 1024 // 10MB limit --> 6MB for Lambda
+	MaxFileLength        = 6 * 1024 * 1024 // 200MB limit  --> 6MB for Lambda
+	MaxExpirationMinutes = 10080           // 7 days limit
 	MinPasswordLength    = 6
 	MaxPasswordLength    = 72 // Standard bcrypt limit
 )
@@ -159,9 +159,13 @@ func createSecretHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Secr
 				pw.CloseWithError(encryptErr)
 			}()
 
-			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
+			_, err := storage.Clients3.PutObject(c.Context(), &s3.PutObjectInput{
+				Bucket: &storage.Bucket,
+				Key:    &fileKey,
+				Body:   pr,
+			})
 			if err != nil {
-				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to upload file to MinIO"})
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to upload file to S3"})
 			}
 
 			// Check if there was an encryption error
@@ -531,6 +535,8 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			}
 		}
 
+		fmt.Println("Text Input: ", text)
+
 		var encryptedTextNonce []byte
 		var encryptedTextString string
 		if text != "" {
@@ -539,39 +545,70 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 				return renderErr("Failed to encrypt text")
 			}
 			encryptedTextNonce = encData.Nonce
-			encryptedTextString = string(encData.Ciphertext)
+			encryptedTextString = base64.StdEncoding.EncodeToString(encData.Ciphertext)
 		}
+		fmt.Println("EncryptedTextString: ", encryptedTextString)
 
 		var fileKey string
 		var encryptedFileNonce []byte
 		if isFile {
 			fileKey = uuid.New().String()
 
-			// Stream ciphertext directly to MinIO via a pipe to avoid an extra
-			// in-memory copy of the encrypted bytes.
-			pr, pw := io.Pipe()
+			// Read entire file into memory if small (Option 1)
+			const SmallFileThreshold = 5 * 1024 * 1024 // 5 MB
+			fileHeader, _ := c.FormFile("file")
 
-			// We use a channel to communicate errors back from the encryptor goroutine
-			errChan := make(chan error, 1)
-
-			go func() {
-				// EncryptStream will read from fileStream, encrypt, and write to pw
-				iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
-				if encryptErr == nil {
-					encryptedFileNonce = iv
+			if fileHeader.Size <= SmallFileThreshold {
+				// --- Option 1: Small files (read in memory) ---
+				fileBytes, err := io.ReadAll(fileStream)
+				if err != nil {
+					return renderErr("Failed to read file")
 				}
-				errChan <- encryptErr
-				pw.CloseWithError(encryptErr)
-			}()
 
-			_, err := storage.Client.PutObject(c.Context(), storage.BucketName, fileKey, pr, -1, minio.PutObjectOptions{})
-			if err != nil {
-				return renderErr("Failed to upload file to MinIO")
-			}
+				encData, err := encryption.Encrypt(fileBytes, encryptionKey)
+				if err != nil {
+					return renderErr("Failed to encrypt file")
+				}
 
-			// Check if there was an encryption error
-			if encryptErr := <-errChan; encryptErr != nil {
-				return renderErr("Failed to encrypt file stream")
+				// Upload encrypted bytes to S3
+				_, err = storage.Clients3.PutObject(c.Context(), &s3.PutObjectInput{
+					Bucket: &storage.Bucket,
+					Key:    &fileKey,
+					Body:   bytes.NewReader(encData.Ciphertext),
+				})
+				if err != nil {
+					return renderErr("Failed to upload file to S3: " + err.Error())
+				}
+
+				// Store nonce for decryption
+				encryptedFileNonce = encData.Nonce
+			} else {
+				// --- Option 2: Large files (streaming with pipe) ---
+				pr, pw := io.Pipe()
+				errChan := make(chan error, 1)
+
+				go func() {
+					iv, encryptErr := encryption.EncryptStream(fileStream, pw, encryptionKey)
+					if encryptErr == nil {
+						encryptedFileNonce = iv
+					}
+					errChan <- encryptErr
+					pw.CloseWithError(encryptErr)
+				}()
+
+				_, err := storage.Clients3.PutObject(c.Context(), &s3.PutObjectInput{
+					Bucket: &storage.Bucket,
+					Key:    &fileKey,
+					Body:   pr,
+				})
+				if err != nil {
+					return renderErr("Failed to upload file to S3: " + err.Error())
+				}
+
+				// Wait for encryption goroutine to finish
+				if encryptErr := <-errChan; encryptErr != nil {
+					return renderErr("Failed to encrypt file stream")
+				}
 			}
 		}
 
@@ -594,9 +631,10 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 
 		scheduler.AddSecret(newSecret.ID, newSecret.ExpiresAt)
 
+		backendBaseUrl := os.Getenv("BACKEND_BASE_URL")
+
 		// Build the shareable link pointing to the view page on the same server
-		scheme := "http"
-		link := scheme + "://" + c.Hostname() + "/view/" + newSecret.UUID
+		link := backendBaseUrl + "/view/" + newSecret.UUID
 
 		return c.Render("index", fiber.Map{
 			"Link":            link,
@@ -624,6 +662,7 @@ func viewPageHandler(db *gorm.DB) fiber.Handler {
 
 		var s secret.Secret
 		if result := db.First(&s, "uuid = ?", id); result.Error != nil {
+			fmt.Println("DB ERROR:", result.Error)
 			if result.Error == gorm.ErrRecordNotFound {
 				return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
 			}
@@ -644,7 +683,7 @@ func viewPageHandler(db *gorm.DB) fiber.Handler {
 	}
 }
 
-func confirmViewPageHandler(db *gorm.DB, store *session.Store) fiber.Handler {
+func confirmViewPageHandler(db *gorm.DB) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
 
@@ -679,20 +718,17 @@ func confirmViewPageHandler(db *gorm.DB, store *session.Store) fiber.Handler {
 			}
 		}
 
-		sess, _ := store.Get(c)
-		sess.Set("confirmed_secret_pass", password)
-		sess.Save()
-
 		return c.Render("view", fiber.Map{
 			"ID":              id,
 			"RequirePassword": false,
+			"PasswordEntered": password,
 		})
 	}
 }
 
 // submitViewPageHandler handles the password form POST, decrypts the secret,
 // and re-renders the view page with the plaintext (or an error message).
-func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler, store *session.Store) fiber.Handler {
+func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretScheduler) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		id := c.Params("id")
 
@@ -714,6 +750,7 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			}
 			return renderErr(fiber.StatusInternalServerError, "Database error")
 		}
+		fmt.Printf("Secret from DB: %+v\n", s)
 
 		// In DEBUG MODE, secrets are soft-deleted (DeletedAt is set manually).
 		// Since DeletedAt is a plain time.Time (not gorm.DeletedAt), GORM does
@@ -722,12 +759,7 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			return renderErr(fiber.StatusNotFound, "Secret not found (it may have already been viewed or never existed)")
 		}
 
-		sess, _ := store.Get(c)
-		passInterface := sess.Get("confirmed_secret_pass")
-		var password string
-		if passInterface != nil {
-			password = passInterface.(string)
-		}
+		password := c.FormValue("password")
 		if s.PasswordHash != "" {
 			if password == "" {
 				return renderErr(fiber.StatusBadRequest, "Password is required")
@@ -745,40 +777,84 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 
 		var decryptedText string
 		if s.Text != "" {
+			cipherBytes, err := base64.StdEncoding.DecodeString(s.Text)
+			if err != nil {
+				return renderErr(fiber.StatusInternalServerError, "Invalid stored ciphertext")
+			}
 			encData := &encryption.EncryptedData{
-				Ciphertext: []byte(s.Text),
+				Ciphertext: cipherBytes,
 				Nonce:      s.TextNonce,
 			}
+
+			fmt.Println("Ciphertext: ", string(encData.Ciphertext))
+
 			txt, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
 				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt text")
 			}
 			decryptedText = string(txt)
 		}
+		fmt.Println("s.Text: ", s.Text)
 
 		var fileData string
 		if s.FileKey != "" {
-			obj, err := storage.Client.GetObject(c.Context(), storage.BucketName, s.FileKey, minio.GetObjectOptions{})
+			// First, get the object metadata to check its size
+			headResp, err := storage.Clients3.HeadObject(c.Context(), &s3.HeadObjectInput{
+				Bucket: &storage.Bucket,
+				Key:    &s.FileKey,
+			})
 			if err != nil {
-				return renderErr(fiber.StatusInternalServerError, "Failed to get file from MinIO")
+				return renderErr(fiber.StatusInternalServerError, "Failed to get file info from S3")
 			}
-			defer obj.Close()
 
-			// Similarly, view page needs to evaluate file size memory tradeoffs for base64 encoding
-			var decBuf bytes.Buffer
-			err = encryption.DecryptStream(obj, &decBuf, encryptionKey, s.FileNonce)
+			const SmallFileThreshold = 5 * 1024 * 1024 // 5 MB
+
+			resp, err := storage.Clients3.GetObject(c.Context(), &s3.GetObjectInput{
+				Bucket: &storage.Bucket,
+				Key:    &s.FileKey,
+			})
 			if err != nil {
-				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt file")
+				return renderErr(fiber.StatusInternalServerError, "Failed to get file from S3")
 			}
+			defer resp.Body.Close()
 
-			decBytes := decBuf.Bytes()
+			if headResp.ContentLength != nil && *headResp.ContentLength <= SmallFileThreshold {
+				// --- Option 1: Small files (read all in memory) ---
+				encBytes, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return renderErr(fiber.StatusInternalServerError, "Failed to read encrypted file")
+				}
 
-			// Validate file type
-			if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
-				return renderErr(fiber.StatusBadRequest, err.Error())
+				decBytes, err := encryption.Decrypt(&encryption.EncryptedData{
+					Ciphertext: encBytes,
+					Nonce:      s.FileNonce,
+				}, encryptionKey)
+				if err != nil {
+					return renderErr(fiber.StatusInternalServerError, "Failed to decrypt file")
+				}
+
+				// Validate file type
+				if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
+					return renderErr(fiber.StatusBadRequest, err.Error())
+				}
+
+				fileData = base64.StdEncoding.EncodeToString(decBytes)
+			} else {
+				// --- Option 2: Large files (streaming) ---
+				var decBuf bytes.Buffer
+				if err := encryption.DecryptStream(resp.Body, &decBuf, encryptionKey, s.FileNonce); err != nil {
+					return renderErr(fiber.StatusInternalServerError, "Failed to decrypt file stream")
+				}
+
+				decBytes := decBuf.Bytes()
+
+				// Validate file type
+				if err := filevalidation.ValidateFileType(decBytes[:min(512, len(decBytes))]); err != nil {
+					return renderErr(fiber.StatusBadRequest, err.Error())
+				}
+
+				fileData = base64.StdEncoding.EncodeToString(decBytes)
 			}
-
-			fileData = base64.StdEncoding.EncodeToString([]byte(decBytes))
 		}
 
 		scheduler.RemoveSecret(s.ID)
@@ -786,10 +862,16 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 		appDebug := os.Getenv("APPDEBUG")
 		if appDebug == "0" {
 			if result := db.Unscoped().Delete(&s); result.Error != nil {
-				log.Printf("Failed to delete secret %s: %v", id, result.Error)
+				fmt.Println("Failed to delete secret", id, ": ", result.Error)
 			}
 			if s.FileKey != "" {
-				_ = storage.Client.RemoveObject(context.Background(), storage.BucketName, s.FileKey, minio.RemoveObjectOptions{})
+				_, err := storage.Clients3.DeleteObject(context.Background(), &s3.DeleteObjectInput{
+					Bucket: &storage.Bucket,
+					Key:    &s.FileKey,
+				})
+				if err != nil {
+					log.Printf("Failed to delete S3 object %s: %v", s.FileKey, err)
+				}
 			}
 		} else {
 			if result := db.Model(&s).Update("deleted_at", time.Now().UTC()); result.Error != nil {
@@ -798,6 +880,8 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 		}
 
 		isFile := s.FileKey != ""
+
+		fmt.Println("SecretText: ", decryptedText)
 
 		return c.Render("view", fiber.Map{
 			"SecretText": decryptedText,
