@@ -9,6 +9,8 @@ import (
 
 	template "github.com/Pestip108/Project-Simulation/backend"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/logs"
+	log_listener "github.com/Pestip108/Project-Simulation/backend/pkg/logs_listener"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/models"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
@@ -20,6 +22,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -27,6 +30,7 @@ import (
 var encryptionKey []byte
 var allowedOrigins string
 var port string
+var redisAddress string
 
 func init() {
 	godotenv.Load()
@@ -50,6 +54,11 @@ func init() {
 		log.Fatal("ENCRYPTION_KEY must be 32 bytes for AES-256")
 	}
 
+	redisAddress = os.Getenv("REDIS_ADDRESS")
+	if redisAddress == "" {
+		log.Fatal("REDIS_ADDRESS not set")
+	}
+
 	encryptionKey = []byte(key)
 }
 
@@ -60,20 +69,32 @@ func main() {
 	}
 
 	// Auto Migrate the schema
-	if err := db.AutoMigrate(&secret.Secret{}, &models.User{}); err != nil {
+	if err := db.AutoMigrate(
+		&secret.Secret{},
+		&models.User{},
+		&models.Log{},
+	); err != nil {
 		log.Fatal("Failed to auto migrate:", err)
 	}
 
 	// Start the cleanup scheduler
 	scheduler := heap.NewSecretScheduler(db)
 
-	log.Println("Initializing MinIO connection...")
+	log.Println("Initializing S3 connection...")
 	storage.InitS3()
 
 	// Parse custom CORS origins from .env
 	if err := scheduler.LoadPendingSecrets(); err != nil {
 		log.Fatal(err)
 	}
+
+	// Starting logger
+	// log.Println("Starting up logger...")
+	rdb := redis.NewClient(&redis.Options{
+		Addr: redisAddress,
+	})
+	logs.InitPublisher(rdb)
+	go log_listener.RunLogSubscriber(rdb, db)
 
 	// Strip the "views/" prefix from the embedded FS so that templates
 	// are registered as "index" and "view" (not "views/index", "views/view").

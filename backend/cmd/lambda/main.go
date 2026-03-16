@@ -12,6 +12,8 @@ import (
 
 	template "github.com/Pestip108/Project-Simulation/backend"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/logs"
+	log_listener "github.com/Pestip108/Project-Simulation/backend/pkg/logs_listener"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/models"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/routes"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
@@ -23,6 +25,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/gofiber/template/html/v2"
 	"github.com/joho/godotenv"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -51,12 +54,21 @@ func SetupApp() (*fiber.App, error) {
 		return nil, fmt.Errorf("DATABASE_DSN not set")
 	}
 
+	redisAddress := os.Getenv("REDIS_ADDRESS")
+	if redisAddress == "" {
+		return nil, fmt.Errorf("REDIS_ADDRESS not set")
+	}
+
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to DB: %w", err)
 	}
 
-	if err := db.AutoMigrate(&secret.Secret{}, &models.User{}); err != nil {
+	if err := db.AutoMigrate(
+		&secret.Secret{},
+		&models.User{},
+		&models.Log{},
+	); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate: %w", err)
 	}
 
@@ -73,6 +85,14 @@ func SetupApp() (*fiber.App, error) {
 
 	// Initialize S3 Bucket
 	storage.InitS3()
+
+	// Starting logger
+	// log.Println("Starting up logger...")
+	rdb := redis.NewClient(&redis.Options{
+		Addr: redisAddress,
+	})
+	logs.InitPublisher(rdb)
+	go log_listener.RunLogSubscriber(rdb, db)
 
 	// Embedded templates
 	viewsSubFS, err := fs.Sub(template.ViewsFS, "views")
