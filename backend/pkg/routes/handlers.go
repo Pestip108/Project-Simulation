@@ -14,6 +14,7 @@ import (
 	"github.com/Pestip108/Project-Simulation/backend/pkg/encryption"
 	filevalidation "github.com/Pestip108/Project-Simulation/backend/pkg/file_validation"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/heap"
+	"github.com/Pestip108/Project-Simulation/backend/pkg/logs"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/models"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/secret"
 	"github.com/Pestip108/Project-Simulation/backend/pkg/storage"
@@ -485,6 +486,7 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			headerBuffer := make([]byte, 512)
 			n, readErr := io.ReadFull(file, headerBuffer)
 			if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+				logAction("Error: Failed to read file header")
 				return c.Status(fiber.StatusInternalServerError).Render("index", fiber.Map{
 					"Error": "Failed to read file header",
 				})
@@ -494,6 +496,7 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 
 			// Validate file type
 			if err := filevalidation.ValidateFileType(headerBuffer); err != nil {
+				logAction("Error:" + err.Error())
 				return renderErr(err.Error())
 			}
 
@@ -531,23 +534,22 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 			var err error
 			passwordHash, err = bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 			if err != nil {
+				logAction("Error: Failed to hash password")
 				return renderErr("Failed to hash password")
 			}
 		}
-
-		fmt.Println("Text Input: ", text)
 
 		var encryptedTextNonce []byte
 		var encryptedTextString string
 		if text != "" {
 			encData, err := encryption.Encrypt([]byte(text), encryptionKey)
 			if err != nil {
+				logAction("Error: Failed to encrypt text")
 				return renderErr("Failed to encrypt text")
 			}
 			encryptedTextNonce = encData.Nonce
 			encryptedTextString = base64.StdEncoding.EncodeToString(encData.Ciphertext)
 		}
-		fmt.Println("EncryptedTextString: ", encryptedTextString)
 
 		var fileKey string
 		var encryptedFileNonce []byte
@@ -562,11 +564,13 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 				// --- Option 1: Small files (read in memory) ---
 				fileBytes, err := io.ReadAll(fileStream)
 				if err != nil {
+					logAction("Error: Failed to read file")
 					return renderErr("Failed to read file")
 				}
 
 				encData, err := encryption.Encrypt(fileBytes, encryptionKey)
 				if err != nil {
+					logAction("Error: Failed to encrypt file")
 					return renderErr("Failed to encrypt file")
 				}
 
@@ -577,6 +581,7 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 					Body:   bytes.NewReader(encData.Ciphertext),
 				})
 				if err != nil {
+					logAction("Error: Failed to upload file to S3: " + err.Error())
 					return renderErr("Failed to upload file to S3: " + err.Error())
 				}
 
@@ -602,14 +607,18 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 					Body:   pr,
 				})
 				if err != nil {
+					logAction("Error: Failed to upload file to S3: " + err.Error())
 					return renderErr("Failed to upload file to S3: " + err.Error())
 				}
 
 				// Wait for encryption goroutine to finish
 				if encryptErr := <-errChan; encryptErr != nil {
+					logAction("Error: Failed to encrypt file stream")
 					return renderErr("Failed to encrypt file stream")
 				}
 			}
+
+			logAction("Uploaded File")
 		}
 
 		// Secret is created using the passwordHash defined above (if any)
@@ -626,8 +635,11 @@ func sharePageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.SecretS
 		}
 
 		if result := db.Create(&newSecret); result.Error != nil {
+			logAction("Error: Could not save secret")
 			return renderErr("Could not save secret")
 		}
+
+		logAction("Created Secret Successfully")
 
 		scheduler.AddSecret(newSecret.ID, newSecret.ExpiresAt)
 
@@ -750,7 +762,6 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			}
 			return renderErr(fiber.StatusInternalServerError, "Database error")
 		}
-		fmt.Printf("Secret from DB: %+v\n", s)
 
 		// In DEBUG MODE, secrets are soft-deleted (DeletedAt is set manually).
 		// Since DeletedAt is a plain time.Time (not gorm.DeletedAt), GORM does
@@ -786,15 +797,12 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 				Nonce:      s.TextNonce,
 			}
 
-			fmt.Println("Ciphertext: ", string(encData.Ciphertext))
-
 			txt, err := encryption.Decrypt(encData, encryptionKey)
 			if err != nil {
 				return renderErr(fiber.StatusInternalServerError, "Failed to decrypt text")
 			}
 			decryptedText = string(txt)
 		}
-		fmt.Println("s.Text: ", s.Text)
 
 		var fileData string
 		if s.FileKey != "" {
@@ -862,6 +870,7 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 		appDebug := os.Getenv("APPDEBUG")
 		if appDebug == "0" {
 			if result := db.Unscoped().Delete(&s); result.Error != nil {
+				logAction("Error: Failed to delete secret" + id + ": " + result.Error.Error())
 				fmt.Println("Failed to delete secret", id, ": ", result.Error)
 			}
 			if s.FileKey != "" {
@@ -881,7 +890,7 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 
 		isFile := s.FileKey != ""
 
-		fmt.Println("SecretText: ", decryptedText)
+		logAction("Showed & Deleted Secret Successfully")
 
 		return c.Render("view", fiber.Map{
 			"SecretText": decryptedText,
@@ -889,5 +898,15 @@ func submitViewPageHandler(db *gorm.DB, encryptionKey []byte, scheduler *heap.Se
 			"FileName":   s.FileName,
 			"FileData":   fileData,
 		})
+	}
+}
+
+// LOGGER
+func logAction(action string) {
+	err := logs.PublishLog(logs.LogEvent{
+		Action: action,
+	})
+	if err != nil {
+		fmt.Println("Error while logging action: " + action)
 	}
 }
